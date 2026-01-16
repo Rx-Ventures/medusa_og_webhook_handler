@@ -3,7 +3,7 @@
 - always create a base for schema followed by 
 reqeuest,response,update,deleted 
 
-reference  schemas/payment.py
+- reference  schemas/payment.py
 
 ###### GIT RULES 
 
