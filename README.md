@@ -44,9 +44,28 @@ npm install
 - delete weird comments 
 - right ready to test code
 
+###### Database Access Strategy
 
+### ORM (SQLAlchemy)
 
+- Tables we own and created via Alembic
+- webhook_events table
+- Full CRUD operations
+- Type safety and validation
+- Migrations managed by us
+- Raw SQL (asyncpg)
 
+### Medusa's existing tables
+
+- Read-only queries to Medusa data
+- Complex joins and aggregations
+- No model maintenance needed
+- Schema changes handled by Medusa
+
+### Simple Rule
+
+- We created it → ORM
+- Medusa created it → Raw SQL
 
 
 
