@@ -42,6 +42,7 @@ npm install
 
 - always right clean code
 - delete weird comments 
+- righ ready to test code
 
 
 
