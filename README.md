@@ -80,6 +80,7 @@ docker-compose -f docker-compose.prod.yml logs -f app
 docker-compose down
 docker-compose build --no-cache
 docker-compose up
+docker exec -it app alembic upgrade head
 
 ###### Alembic Commands
 
@@ -101,5 +102,11 @@ docker-compose up
 - This re-applies all migrations from scratch
 
 
-###### Reset Alembic 
+###### Fresh db commands
 
+# Delete old migrations!
+rm alembic/versions/b3320398c202_initial.py
+
+docker exec -it local_fastapi alembic revision --autogenerate -m "create webhook_events"
+
+docker exec -it local_fastapi alembic upgrade head
