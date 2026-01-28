@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post('/solidgate_webhook')
-async def webhook_test(request: Request, db: Session = Depends(get_db_session)):
+async def solidgate_webhook(request: Request, db: Session = Depends(get_db_session)):
     try:
         body = await request.json()
 
