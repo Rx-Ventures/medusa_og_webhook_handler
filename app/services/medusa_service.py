@@ -35,6 +35,8 @@ class MedusaService:
             logger.info("Using cached medusa token")
             return cached_token
 
+        print(f"calling this: {self.base_url}/auth/user/emailpass")
+
         for attempt in range(max_retries):        
             try:
                 async with httpx.AsyncClient() as client:

@@ -1,8 +1,8 @@
 """create webhook_events
 
-Revision ID: 181ae7021988
+Revision ID: a973ce311ce7
 Revises: 
-Create Date: 2026-01-22 10:56:44.354489
+Create Date: 2026-01-29 17:03:41.441783
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '181ae7021988'
+revision: str = 'a973ce311ce7'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

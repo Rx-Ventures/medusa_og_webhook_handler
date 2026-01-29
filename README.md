@@ -104,9 +104,18 @@ docker exec -it app alembic upgrade head
 
 ###### Fresh db commands
 
-# Delete old migrations!
-rm alembic/versions/b3320398c202_initial.py
+- be sure to delete versions!
+- be sure to use session pooler 
+- then do alembic revision --autogenerate -m "create webhook_events"
+- alembic upgrade head
 
-docker exec -it local_fastapi alembic revision --autogenerate -m "create webhook_events"
+###### changes 
 
-docker exec -it local_fastapi alembic upgrade head
+- if you change ecs.tf 
+   - you need terraform apply 
+
+- changes in secret 
+   - redeploy 
+
+- changes in code 
+   docker build and deploy

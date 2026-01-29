@@ -8,10 +8,10 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     
     DATABASE_URL: str
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_SIZE: int = 3
+    DB_MAX_OVERFLOW: int = 2
     DB_POOL_TIMEOUT: int = 30
-    DB_POOL_RECYCLE: int = 3600
+    DB_POOL_RECYCLE: int = 300
     DB_ECHO: bool = False
     
     SOLIDGATE_PUBLIC_KEY: str
