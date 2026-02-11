@@ -164,7 +164,6 @@ class MedusaService:
             )
 
     async def complete_cart(self, cart_id: str) -> dict | None:
-        """Complete cart and return order_id"""
         result = await self.execute_request(
             endpoint=f"/store/carts/{cart_id}/complete",
             method="POST",
@@ -185,7 +184,6 @@ class MedusaService:
         return {"order_id": order_id}
 
     async def get_payment_session_id_from_cart(self, cart_id: str) -> str | None:
-        """Get payment_session_id from cart's payment_collection"""
         result = await self.execute_request(
             endpoint=f"/store/carts/{cart_id}",
             method="GET",
