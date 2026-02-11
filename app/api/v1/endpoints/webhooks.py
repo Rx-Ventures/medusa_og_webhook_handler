@@ -1,13 +1,13 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.dependencies import get_unit_of_work
 from app.core.unit_of_work import UnitOfWork
-from app.schemas.webhook import WebhookEventCreate, WebhookEventResponse
 from app.schemas.common import GenericApiResponse
+from app.schemas.webhook import WebhookEventCreate, WebhookEventResponse
 from app.services.idempotency_service import IdempotencyService
 from app.services.medusa_service import medusa_service
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +46,14 @@ router = APIRouter()
 #                 )
 
 #             return result
-        
+
 #         return GenericApiResponse(
 #             success=True,
-#             message="solidgate_webhook call success", 
+#             message="solidgate_webhook call success",
 #             status_code=status.HTTP_201_CREATED,
 #             data=body
 #         )
-    
+
 #     except Exception as e:
 #         logger.error(f"Webhook error: {e}")  # ✅ Now you can see real error
 #         import traceback
@@ -63,10 +63,10 @@ router = APIRouter()
 #             detail="An unexpected error occurred"
 #         )
 
+
 @router.post("/solidgate", response_model=WebhookEventResponse)
 async def handle_solidgate_webhook(
-    request: Request,
-    uow: UnitOfWork = Depends(get_unit_of_work)
+    request: Request, uow: UnitOfWork = Depends(get_unit_of_work)
 ):
 
     payload = await request.json()
@@ -82,15 +82,19 @@ async def handle_solidgate_webhook(
     print("=" * 80)
     print("=" * 80)
     print("=" * 80)
-    print(f"request.headers.get(solidgate-event-type): {request.headers.get("solidgate-event-type")}")
-    print(f"request.headers.get(solidgate-event-id): {request.headers.get("solidgate-event-id")}")
+    print(
+        f"request.headers.get(solidgate-event-type): {request.headers.get('solidgate-event-type')}"
+    )
+    print(
+        f"request.headers.get(solidgate-event-id): {request.headers.get('solidgate-event-id')}"
+    )
     print("=" * 80)
     print("=" * 80)
 
     order = payload.get("order", {})
     order_id = order.get("order_id")
     order_status = order.get("status")
-    
+
     webhook_data = WebhookEventCreate(
         event_id=request.headers.get("solidgate-event-id"),
         psp="solidgate",
@@ -101,10 +105,10 @@ async def handle_solidgate_webhook(
 
     service = IdempotencyService(uow)
     idempotency_result = await service.check_and_create_webhook_event(webhook_data)
-    
+
     if idempotency_result is None:
-            logger.info(f"Webhook already processed: {webhook_data.event_id}")
-            return {"message": "Event already processed"}
+        logger.info(f"Webhook already processed: {webhook_data.event_id}")
+        return {"message": "Event already processed"}
 
     if order_status == "settle_ok":
         result = await medusa_service.process_settle_ok(order_id)
@@ -112,7 +116,7 @@ async def handle_solidgate_webhook(
         if not result:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to process settle_ok"
+                detail="Failed to process settle_ok",
             )
 
         return result
@@ -121,5 +125,5 @@ async def handle_solidgate_webhook(
         success=True,
         message="Webhook processed",
         status_code=status.HTTP_200_OK,
-        data=payload
+        data=payload,
     )
