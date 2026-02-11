@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 MEDUSA_TOKEN_KEY = "medusa:admin_token"
 
-
 class MedusaService:
     def __init__(self):
         self.base_url = settings.MEDUSA_BASE_URL
@@ -271,6 +270,5 @@ class MedusaService:
             status_code=status.HTTP_200_OK,
             data={"order_id": order_id, "payment_id": payment_id, "cart_id": cart_id},
         )
-
 
 medusa_service = MedusaService()
