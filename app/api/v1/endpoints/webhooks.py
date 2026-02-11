@@ -88,14 +88,14 @@ async def handle_solidgate_webhook(
     print("=" * 80)
 
     order = payload.get("order", {})
-    order_id = order.get("order_id")
+    cart_id = order.get("order_id") #cart_id we cant really change the structure
     order_status = order.get("status")
-    
+
     webhook_data = WebhookEventCreate(
         event_id=request.headers.get("solidgate-event-id"),
         psp="solidgate",
         event_type=request.headers.get("solidgate-event-type"),
-        medusa_order_id=order.get("order_id"),
+        medusa_order_id=cart_id, # will change this to cart_id later including column name
         payload=payload,
     )
 
@@ -107,7 +107,7 @@ async def handle_solidgate_webhook(
             return {"message": "Event already processed"}
 
     if order_status == "settle_ok":
-        result = await medusa_service.process_settle_ok(order_id)
+        result = await medusa_service.process_settle_ok(cart_id)
 
         if not result:
             raise HTTPException(
