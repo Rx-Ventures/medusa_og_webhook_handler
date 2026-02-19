@@ -26,10 +26,8 @@ class SlackService:
                 )
                 response.raise_for_status()
                 
-                # Slack webhooks return plain text "ok" on success, not JSON
                 response_text = response.text.strip()
                 if response_text:
-                    # Try to parse as JSON if possible, otherwise return text response
                     try:
                         result = response.json()
                     except ValueError:

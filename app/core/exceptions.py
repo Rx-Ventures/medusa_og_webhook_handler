@@ -1,14 +1,4 @@
-"""
-Custom exception hierarchy for the webhook backend.
-
-All application-level exceptions inherit from AppException so they can be
-caught by a single global handler.
-"""
-
-
 class AppException(Exception):
-    """Base for all app exceptions."""
-
     def __init__(
         self,
         status_code: int,
@@ -24,7 +14,6 @@ class AppException(Exception):
 
 
 class WebhookProcessingError(AppException):
-    """Raised when a multi-step webhook flow (e.g. settle_ok) fails partway."""
 
     def __init__(self, message: str, details: dict | None = None):
         super().__init__(
@@ -34,10 +23,7 @@ class WebhookProcessingError(AppException):
             details=details,
         )
 
-
 class ExternalServiceError(AppException):
-    """Raised when an external API call (Medusa, Solidgate) fails."""
-
     def __init__(self, message: str, details: dict | None = None):
         super().__init__(
             status_code=502,

@@ -24,4 +24,4 @@ class WebhookEventRepository(BaseRepository[WebhookEvent]):
         return await self.update_by_id(id, processed=True)
     
     async def mark_as_failed(self, id: str, error_message: str) -> WebhookEvent | None:
-        return await self.update_by_id(id, processed=False, error_message=error_message)
+        return await self.update_by_id(id, processed=True, error_message=error_message)
