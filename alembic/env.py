@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 
-from app.core.database import Base
+
+# Fixed the import here there is no Base in database.py
 from app.core.config import settings
+from app.models.base import Base
 from app.models.webhook import WebhookEvent
 
 config = context.config
