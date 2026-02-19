@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     MEDUSA_TOKEN_CACHE_TTL: int = 82800
     MEDUSA_PUBLISHABLE_KEY: str
     
+    SLACK_ALERTS_URL: str
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
