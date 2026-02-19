@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     MEDUSA_TOKEN_CACHE_TTL: int = 82800
     MEDUSA_PUBLISHABLE_KEY: str
     
+    TEST_HOST: str
+
+    ORDERGROOVE_API_KEY: str = ""
+    ORDERGROOVE_HASH_KEY: str = ""
+    ORDERGROOVE_MERCHANT_ID: str = ""
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

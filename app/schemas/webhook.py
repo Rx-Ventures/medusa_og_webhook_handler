@@ -24,6 +24,6 @@ class WebhookEventCreate(WebhookEventBase):
 class WebhookEventResponse(WebhookEventBase, BaseDBSchema):
     pass
 
-class WebhookAck(BaseModel):
-    success: bool = True
-    message: str = "Webhook received"
+# class WebhookAck(BaseModel):
+#     success: bool = True
+#     message: str = "Webhook received"

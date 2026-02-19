@@ -13,6 +13,8 @@ from sqlalchemy import text
 
 from app.core.config import settings
 
+class Base(DeclarativeBase):
+    pass
 
 engine: AsyncEngine = create_async_engine(
     url=settings.DATABASE_URL,
