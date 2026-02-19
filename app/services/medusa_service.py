@@ -22,7 +22,7 @@ class MedusaService:
 
     async def _get_cached_token(self) -> str | None:
         return await redis_client.get(MEDUSA_TOKEN_KEY)
-    
+
     async def _cache_token(self, token: str) -> None:
         await redis_client.set(MEDUSA_TOKEN_KEY, token, ttl=self.token_ttl)
 
@@ -35,18 +35,13 @@ class MedusaService:
             logger.info("Using cached medusa token")
             return cached_token
 
-        print(f"calling this: {self.base_url}/auth/user/emailpass")
-
-        for attempt in range(max_retries):        
+        for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         f"{self.base_url}/auth/user/emailpass",
-                        json={
-                            "email": self.email,
-                            "password": self.password
-                        },
-                        timeout=30.0
+                        json={"email": self.email, "password": self.password},
+                        timeout=30.0,
                     )
 
                     if response.status_code == status.HTTP_200_OK:
@@ -57,20 +52,24 @@ class MedusaService:
                             await self._cache_token(token)
                             logger.info("Medusa token cached")
                             return token
-                        
-                    logger.warning(f"Medusa auth attempt {attempt + 1}/{max_retries} failed: {response.status_code}")
+
+                    logger.warning(
+                        f"Medusa auth attempt {attempt + 1}/{max_retries} failed: {response.status_code}"
+                    )
 
             except Exception as e:
-                logger.warning(f"Medusa auth attempt {attempt + 1}/{max_retries} error: {e}")
-        
+                logger.warning(
+                    f"Medusa auth attempt {attempt + 1}/{max_retries} error: {e}"
+                )
+
             if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
+                wait_time = 2**attempt
                 logger.info(f"Retrying in {wait_time} seconds...")
                 await asyncio.sleep(wait_time)
 
         logger.error(f"Medusa auth failed after {max_retries} attempts")
         return None
-        
+
     async def execute_request(
         self,
         endpoint: str,
@@ -79,18 +78,21 @@ class MedusaService:
         params: dict[str, Any] | None = None,
         retry_on_401: bool = True,
     ) -> GenericApiResponse:
-        
-        token = await self.authenticate()
-        if not token:
-            return GenericApiResponse(
-                success=False,
-                message="Authentication Failed",
-                status_code=status.HTTP_400_BAD_REQUEST,
-                data=None
-            ) 
-        
         url = f"{self.base_url}{endpoint}"
-        headers = {"Authorization": f"Bearer {token}"}
+        is_store_api = "/store/" in endpoint
+
+        if is_store_api:
+            headers = {"x-publishable-api-key": settings.MEDUSA_PUBLISHABLE_KEY}
+        else:
+            token = await self.authenticate()
+            if not token:
+                return GenericApiResponse(
+                    success=False,
+                    message="Authentication Failed",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    data=None,
+                )
+            headers = {"Authorization": f"Bearer {token}"}
 
         try:
             async with httpx.AsyncClient() as client:
@@ -100,10 +102,14 @@ class MedusaService:
                     json=payload,
                     params=params,
                     headers=headers,
-                    timeout=30.0
+                    timeout=30.0,
                 )
 
-                if response.status_code == status.HTTP_401_UNAUTHORIZED and retry_on_401:
+                if (
+                    response.status_code == status.HTTP_401_UNAUTHORIZED
+                    and retry_on_401
+                    and not is_store_api
+                ):
                     await self._clear_token()
                     logger.warning("Token expired, retrying")
                     return await self.execute_request(
@@ -111,21 +117,28 @@ class MedusaService:
                         method=method,
                         payload=payload,
                         params=params,
-                        retry_on_401=False
+                        retry_on_401=False,
                     )
-                
-                if response.status_code in [status.HTTP_201_CREATED, status.HTTP_200_OK, status.HTTP_204_NO_CONTENT]:
+
+                if response.status_code in [
+                    status.HTTP_201_CREATED,
+                    status.HTTP_200_OK,
+                    status.HTTP_204_NO_CONTENT,
+                ]:
                     data = {}
-                    if response.status_code != status.HTTP_204_NO_CONTENT and response.text.strip():
+                    if (
+                        response.status_code != status.HTTP_204_NO_CONTENT
+                        and response.text.strip()
+                    ):
                         data = response.json()
 
                     return GenericApiResponse(
                         success=True,
                         message=f"Calling {endpoint} successful",
                         status_code=response.status_code,
-                        data=data
-                    ) 
-                
+                        data=data,
+                    )
+
                 error_data = {}
                 if response.text.strip():
                     try:
@@ -137,7 +150,7 @@ class MedusaService:
                     success=False,
                     message=f"Request to {endpoint} failed",
                     status_code=response.status_code,
-                    data=error_data
+                    data=error_data,
                 )
 
         except Exception as e:
@@ -146,81 +159,116 @@ class MedusaService:
                 success=False,
                 message=f"Request to {endpoint} failed: {str(e)}",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                data=None
+                data=None,
             )
 
-    async def get_payment_by_order(self, order_id: str) -> dict | None:
+    async def complete_cart(self, cart_id: str) -> dict | None:
         result = await self.execute_request(
-            endpoint=f"/admin/orders/{order_id}",
-            method="GET",
-            params={"fields": "+payment_collection"}
+            endpoint=f"/store/carts/{cart_id}/complete",
+            method="POST",
         )
 
-        # print(f"get_payment_by_order result: {result}")
+        if not result.success:
+            logger.error(f"Complete cart failed: {result.message}")
+            return None
+
+        if result.data.get("type") != "order":
+            logger.warning(f"Cart not ready for completion: {cart_id}")
+            return None
+
+        order = result.data.get("order", {})
+        order_id = order.get("id")
+
+        logger.info(f"Cart completed, order created: {order_id}")
+        return {"order_id": order_id}
+
+    async def get_payment_session_id_from_cart(self, cart_id: str) -> str | None:
+        result = await self.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="GET",
+            params={"fields": "+payment_collection.payment_sessions"},
+        )
 
         if not result.success:
-            logger.error(f"Get order failed: {result.message}")
+            logger.error(f"Get cart failed: {result.message}")
             return None
-        
-        order = result.data.get("order", {})
-        payment_collections = order.get("payment_collections", [])
 
-        if payment_collections:
-            payments = payment_collections[0].get("payments", [])
-            print(f"payments: {payments}")
-            if payments:
-                return {
-                    "payment_id": payments[0].get("id"),
-                    "amount": payments[0].get("amount"),
-                    "currency_code": payments[0].get("currency_code"),
-                }
-        
-        logger.warning(f"No payment found for order: {order_id}")
+        cart = result.data.get("cart", {})
+        payment_collection = cart.get("payment_collection", {})
+        payment_sessions = payment_collection.get("payment_sessions", [])
+
+        if payment_sessions:
+            return payment_sessions[0].get("id")
+
+        logger.warning(f"No payment session found for cart: {cart_id}")
         return None
-    
+
+    async def get_payment_id_by_session(self, payment_session_id: str) -> str | None:
+        result = await self.execute_request(
+            endpoint="/admin/payments",
+            method="GET",
+            params={"payment_session_id": payment_session_id},
+        )
+
+        if not result.success:
+            logger.error(f"Failed to look up payment for session: {payment_session_id}")
+            return None
+
+        payments = result.data.get("payments", [])
+        if payments:
+            return payments[0].get("id")
+
+        logger.warning(f"No payment found for session: {payment_session_id}")
+        return None
+
     async def capture_payment(self, payment_id: str) -> dict | None:
         result = await self.execute_request(
             endpoint=f"/admin/payments/{payment_id}/capture",
-            method="POST"
-        ) 
-
-        print(f"capture_payment result: {result}")
+            method="POST",
+        )
 
         if not result.success:
             logger.error(f"Capture failed: {result.message}")
             return None
 
         logger.info(f"Payment captured: {payment_id}")
-
-        print(f"result.data {result.data.get("payment")}")
-
         return result.data.get("payment")
-    
-    async def process_settle_ok(self, order_id: str) -> GenericApiResponse | None:
 
-        print("Processing!!! process_settle_ok")
-
-        get_payment_by_order = await self.get_payment_by_order(order_id)
-
-        if not get_payment_by_order:
-            logger.error("Failed to get payment")
+    async def process_settle_ok(self, cart_id: str) -> GenericApiResponse | None:
+        '''
+        not final: can change because of edge cases
+        '''
+        complete_result = await self.complete_cart(cart_id)
+        if not complete_result:
+            logger.error(f"Failed to complete cart: {cart_id}")
             return None
-        
-        payment_id = get_payment_by_order.get("payment_id")
-        capture_payment = await self.capture_payment(payment_id)
 
-        if not capture_payment:
-            logger.error("Failed to capture payment")
+        order_id = complete_result.get("order_id")
+        if not order_id:
+            logger.error(f"No order_id found for cart: {cart_id}")
             return None
-        
-        print('axeee process_settle_ok')
-        print(order_id)
 
+        payment_session_id = await self.get_payment_session_id_from_cart(cart_id)
+        if not payment_session_id:
+            logger.error(f"No payment_session_id found for cart: {cart_id}")
+            return None
+
+        payment_id = await self.get_payment_id_by_session(payment_session_id)
+        if not payment_id:
+            logger.error(f"No payment_id found for session: {payment_session_id}")
+            return None
+
+        capture_result = await self.capture_payment(payment_id)
+        if not capture_result:
+            logger.error(f"Failed to capture payment: {payment_id}")
+            return None
+
+        logger.info(f"Successfully settled order: {order_id}")
         return GenericApiResponse(
             success=True,
             message=f"{order_id} successfully settled",
             status_code=status.HTTP_200_OK,
-            data=None
+            data={"order_id": order_id, "payment_id": payment_id, "cart_id": cart_id},
         )
-    
+
 medusa_service = MedusaService()
