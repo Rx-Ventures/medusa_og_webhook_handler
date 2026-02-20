@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     MEDUSA_ADMIN_EMAIL: str 
     MEDUSA_ADMIN_PASSWORD: str
     MEDUSA_TOKEN_CACHE_TTL: int = 82800
+    MEDUSA_PUBLISHABLE_KEY: str
     
     model_config = SettingsConfigDict(
         env_file=".env",

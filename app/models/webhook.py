@@ -1,6 +1,3 @@
-"""
-Webhook event model for storing PSP webhook data.
-"""
 
 import uuid
 from datetime import datetime
@@ -9,14 +6,13 @@ from sqlalchemy import Boolean, DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
 
+from app.models.base import Base, TimestampMixin, generate_prefixed_id
 
 def generate_webhook_id() -> str:
-    return f"wh_evt_{uuid.uuid4().hex}"
+    return generate_prefixed_id("wh_evt")
 
-
-class WebhookEvent(Base):
+class WebhookEvent(TimestampMixin,Base):
     __tablename__ = "webhook_events"
     
     id: Mapped[str] = mapped_column(
@@ -51,15 +47,6 @@ class WebhookEvent(Base):
     error_message: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        onupdate=func.now(),
     )
     
     def __repr__(self) -> str:
