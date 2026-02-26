@@ -104,9 +104,11 @@ docker exec -it app alembic upgrade head
 
 ###### Fresh db commands
 
-- be sure to delete versions!
-- be sure to use session pooler 
-- then do alembic revision --autogenerate -m "create webhook_events"
+- be sure to delete versions! 
+   rm alembic/versions/*.py
+- be sure to use session pooler if supabase if local
+   remove host 
+- alembic revision --autogenerate -m "initial tables"
 - alembic upgrade head
 
 ###### changes 

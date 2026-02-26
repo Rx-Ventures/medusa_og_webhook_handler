@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin, generate_prefixed_id
 
 def generate_webhook_id() -> str:
-    return generate_prefixed_id("wh_evt")
+    return generate_prefixed_id("whevt")
 
 class WebhookEvent(TimestampMixin,Base):
     __tablename__ = "webhook_events"

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin, generate_prefixed_id
 
 def generate_mappings_id() -> str:
-    return generate_prefixed_id("mig_i_m")
+    return generate_prefixed_id("migim")
 
 class MigrationIdMappings(TimestampMixin,Base):
     __tablename__ = "migration_id_mappings"
