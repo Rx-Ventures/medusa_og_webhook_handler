@@ -123,3 +123,44 @@ async def handle_solidgate_webhook(
         status_code=status.HTTP_200_OK,
         data=payload
     )
+
+
+@router.post("/ordergroove", response_model=WebhookEventResponse)
+async def handle_ordergroove_webhook(
+    request: Request,
+    uow: UnitOfWork = Depends(get_unit_of_work),
+):
+    payload = await request.json()
+
+    event_type = payload.get("type") or payload.get("event_type") or "ordergroove.unknown"
+    event_id = (
+        payload.get("event_id")
+        or payload.get("id")
+        or request.headers.get("x-ordergroove-event-id")
+        or f"og_{int(__import__('time').time() * 1000)}"
+    )
+    order_id = (
+        payload.get("merchant_order_id")
+        or payload.get("order_id")
+        or payload.get("session_id")
+    )
+
+    logger.info(f"OrderGroove webhook received — event_id={event_id}, type={event_type}, order={order_id}")
+    logger.info(f"OrderGroove webhook payload: {payload}")
+
+    webhook_data = WebhookEventCreate(
+        event_id=event_id,
+        psp="ordergroove",
+        event_type=event_type,
+        medusa_order_id=order_id,
+        payload=payload,
+    )
+
+    service = IdempotencyService(uow)
+    idempotency_result = await service.check_and_create_webhook_event(webhook_data)
+
+    if idempotency_result is None:
+        logger.info(f"OrderGroove webhook already processed: {event_id}")
+        return {"message": "Event already processed"}
+
+    return idempotency_result
