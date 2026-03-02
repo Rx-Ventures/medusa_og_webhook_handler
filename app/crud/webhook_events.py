@@ -10,6 +10,7 @@ from app.schemas.webhook import WebhookEventCreate, WebhookEventResponse
 logger = logging.getLogger(__name__)
 
 
+#To be removed
 async def create_webhook_event(
     db: AsyncSession, 
     webhook_event: WebhookEventCreate
@@ -32,6 +33,8 @@ async def create_webhook_event(
             detail="An unexpected error occurred"
         )
 
+
+#To be removed
 async def get_webhook_event_by_event_id(
     db: AsyncSession, 
     event_id: str

@@ -6,6 +6,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.redis import redis_client
+from app.core.exceptions import WebhookProcessingError
 from fastapi import status
 from app.schemas.common import GenericApiResponse
 
@@ -172,7 +173,7 @@ class MedusaService:
             logger.error(f"Complete cart failed: {result.message}")
             return None
 
-        if result.data.get("type") != "order":
+        if not result.data or result.data.get("type") != "order":
             logger.warning(f"Cart not ready for completion: {cart_id}")
             return None
 
@@ -234,41 +235,65 @@ class MedusaService:
         logger.info(f"Payment captured: {payment_id}")
         return result.data.get("payment")
 
-    async def process_settle_ok(self, cart_id: str) -> GenericApiResponse | None:
-        '''
-        not final: can change because of edge cases
-        '''
-        complete_result = await self.complete_cart(cart_id)
-        if not complete_result:
-            logger.error(f"Failed to complete cart: {cart_id}")
-            return None
+    async def process_settle_ok(self, cart_id: str) -> GenericApiResponse:
+       
+        # Step 1: Complete cart
+        cart_result = await self.complete_cart(cart_id)
+        if not cart_result:
+            raise WebhookProcessingError(
+                message=f"Failed to complete cart: {cart_id}",
+                details={
+                    "step": "complete_cart",
+                    "cart_id": cart_id,
+                },
+            )
+        order_id = cart_result["order_id"]
 
-        order_id = complete_result.get("order_id")
-        if not order_id:
-            logger.error(f"No order_id found for cart: {cart_id}")
-            return None
-
+        # Step 2: Get payment session
         payment_session_id = await self.get_payment_session_id_from_cart(cart_id)
         if not payment_session_id:
-            logger.error(f"No payment_session_id found for cart: {cart_id}")
-            return None
+            raise WebhookProcessingError(
+                message=f"No payment session found for cart: {cart_id}",
+                details={
+                    "step": "get_payment_session",
+                    "cart_id": cart_id,
+                    "order_id": order_id,
+                },
+            )
 
+        # Step 3: Look up payment by session
         payment_id = await self.get_payment_id_by_session(payment_session_id)
         if not payment_id:
-            logger.error(f"No payment_id found for session: {payment_session_id}")
-            return None
+            raise WebhookProcessingError(
+                message=f"No payment found for session: {payment_session_id}",
+                details={
+                    "step": "get_payment_id",
+                    "cart_id": cart_id,
+                    "order_id": order_id,
+                    "payment_session_id": payment_session_id,
+                },
+            )
 
+        # Step 4: Capture payment
         capture_result = await self.capture_payment(payment_id)
         if not capture_result:
-            logger.error(f"Failed to capture payment: {payment_id}")
-            return None
+            raise WebhookProcessingError(
+                message=f"Failed to capture payment: {payment_id}",
+                details={
+                    "step": "capture_payment",
+                    "cart_id": cart_id,
+                    "order_id": order_id,
+                    "payment_id": payment_id,
+                },
+            )
 
-        logger.info(f"Successfully settled order: {order_id}")
+        logger.info("Successfully settled order: %s", order_id)
         return GenericApiResponse(
             success=True,
             message=f"{order_id} successfully settled",
             status_code=status.HTTP_200_OK,
             data={"order_id": order_id, "payment_id": payment_id, "cart_id": cart_id},
         )
+
 
 medusa_service = MedusaService()

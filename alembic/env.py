@@ -9,6 +9,7 @@ from alembic import context
 
 from app.models.base import Base
 from app.core.config import settings
+from app.models.base import Base
 from app.models.webhook import WebhookEvent
 from app.models.test_token_customer import TestTokenCustomer
 
@@ -18,6 +19,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
 
 def include_object(object, name, type_, reflected, compare_to):
     if type_ == "table":
