@@ -119,3 +119,62 @@ docker exec -it app alembic upgrade head
 
 - changes in code 
    docker build and deploy
+
+
+---
+
+## NetValve Payment Gateway Routes
+
+
+All routes use the `/api/v1/netvalve/...` prefix convention.
+
+### Route Reference
+
+| Method | Path | Description | Source |
+|--------|------|-------------|--------|
+| POST | `/api/v1/netvalve/hpf/session` | Initialize HPF session (5-step waterfall) | `route.ts` POST |
+| GET | `/api/v1/netvalve/hpf/session` | HPF session (GET convenience) | `route.ts` GET |
+| POST | `/api/v1/netvalve/payment` | Authorize payment via POST /sale | `service.ts` authorizePayment |
+| POST | `/api/v1/netvalve/capture` | Capture authorized payment | `service.ts` capturePayment |
+| POST | `/api/v1/netvalve/refund` | Refund captured payment | `service.ts` refundPayment |
+| POST | `/api/v1/netvalve/cancel` | Cancel (void) payment | `service.ts` cancelPayment |
+| POST | `/api/v1/netvalve/webhook` | Receive NetValve webhook events | `service.ts` getWebhookActionAndData |
+| GET | `/api/v1/netvalve/status` | Check payment status | `service.ts` getPaymentStatus |
+
+### File Structure
+
+```
+app/
+├── api/v1/endpoints/netvalve/
+│   ├── __init__.py
+│   ├── router.py        # Aggregates all sub-routers
+│   ├── hpf.py           # HPF session init (POST + GET)
+│   ├── payment.py       # Payment authorize/sale
+│   ├── capture.py       # Capture
+│   ├── refund.py        # Refund
+│   ├── cancel.py        # Cancel/void
+│   ├── webhook.py       # Webhook receiver
+│   └── status.py        # Status lookup
+├── schemas/
+│   └── netvalve.py      # All Pydantic request/response models
+└── services/
+    └── netvalve_service.py  # Business logic + NetValve API calls
+```
+
+### Environment Variables
+
+Required:
+- `NETVALVE_API_KEY` — API key for NetValve gateway
+
+Optional:
+- `NETVALVE_CLIENT_ID` — Client identifier header
+- `NETVALVE_SITE_ID` — NetValve site/merchant ID
+- `NETVALVE_MID_ID_EUR` / `NETVALVE_MID_ID_USD` / `NETVALVE_MID_ID_PHP` — Currency-specific MID IDs
+- `NETVALVE_ENVIRONMENT` — `sandbox` or `production` (default: production)
+- `NETVALVE_BASE_URL` — Override base URL for payment API
+- `NETVALVE_BACKOFFICE_API_URL` — Override backoffice URL
+- `NETVALVE_BASIC_AUTH_USERNAME` / `NETVALVE_BASIC_AUTH_PASSWORD` — Backoffice credentials
+- `NETVALVE_HPF_SCRIPT_SRC` — Static HPF script URL override
+- `NETVALVE_HPP_DIRECT_URL` — Pre-built HPP redirect URL
+- See `app/core/config.py` for the full list of 30+ NetValve env vars
+
