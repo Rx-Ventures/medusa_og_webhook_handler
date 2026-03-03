@@ -3,6 +3,7 @@ from datetime import datetime
 
 
 class TestTokenCustomerCreate(BaseModel):
+    psp: str
     customer_id: str
     order_id: str
     payment_token: str | None = None
@@ -10,6 +11,7 @@ class TestTokenCustomerCreate(BaseModel):
 
 class TestTokenCustomerResponse(BaseModel):
     id: str
+    psp: str
     customer_id: str
     order_id: str
     payment_token: str | None = None

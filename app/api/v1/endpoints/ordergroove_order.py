@@ -184,10 +184,16 @@ async def handle_ordergroove_order_placement(
             status_code=200,
         )
 
-    # ── Process the recurring order: Create Order → Rebill → Capture ──
+    # ── Solidgate recurring token: use Token ID from the XML (orderTokenId) for /recurring API ──
+    solidgate_recurring_token = (head.get("orderTokenId") or "").strip() or None
+    if solidgate_recurring_token:
+        logger.info("[og-recurring] Using orderTokenId from XML for Solidgate /recurring")
+
+    # ── Process the recurring order: Solidgate (/recurring) or Netvalve (rebill) ──
     try:
         recurring_result = await og_recurring_service.process_recurring_order(
             og_order_data=order_data,
+            solidgate_recurring_token=solidgate_recurring_token,
         )
 
         new_order_id = recurring_result["new_order_id"]
@@ -195,7 +201,7 @@ async def handle_ordergroove_order_placement(
         logger.info(
             f"[og-recurring] Full flow completed — OG order {og_order_id} → "
             f"Medusa order {new_order_id}, "
-            f"rebill txn={recurring_result.get('rebill_transaction_id')}"
+            f"rebill/recurring txn={recurring_result.get('rebill_transaction_id') or recurring_result.get('solidgate_transaction_id')}"
         )
 
         response_xml = XML_SUCCESS_TEMPLATE.format(order_id=new_order_id)

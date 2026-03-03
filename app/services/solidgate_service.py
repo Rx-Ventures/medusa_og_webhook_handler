@@ -133,5 +133,40 @@ class SolidgateService:
     def extract_payment_token(self, webhook_payload: dict) -> str | None:
         return webhook_payload.get("transaction", {}).get("card_token", {}).get("token")
 
+    async def recurring(
+        self,
+        order_id: str,
+        amount: int,
+        currency: str,
+        recurring_token: str,
+        order_description: str = "Recurring order",
+        customer_email: str = "",
+    ) -> dict[str, Any]:
+        """
+        Call Solidgate POST /recurring for 1-click recurring charge.
+        order_id: new order/cart id for this transaction.
+        amount: in minor units (cents).
+        """
+        payload: dict[str, Any] = {
+            "order_id": order_id,
+            "amount": amount,
+            "currency": currency,
+            "order_description": order_description,
+            "type": "auth",
+            "authorization_type": "final",
+            "payment_type": "1-click",
+            "recurring_token": recurring_token,
+            "platform": "WEB",
+            "settle_interval": 0,
+            "ip_address": (settings.SOLIDGATE_RECURRING_IP or "203.0.113.0").strip(),
+        }
+        if customer_email:
+            payload["customer_email"] = customer_email
+        return await self.execute_request(
+            endpoint=f"{settings.SOLIDGATE_API_URL}/recurring",
+            payload=payload,
+            method="POST",
+        )
+
 
 solidgate_service = SolidgateService()

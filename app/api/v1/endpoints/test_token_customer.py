@@ -21,6 +21,7 @@ async def create_test_token_customer(
     session: AsyncSession = Depends(get_db_session),
 ):
     record = TestTokenCustomer(
+        psp=payload.psp,
         customer_id=payload.customer_id,
         order_id=payload.order_id,
         payment_token=payload.payment_token,

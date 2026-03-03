@@ -19,6 +19,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.medusa_service import MedusaService
+from app.services.solidgate_service import solidgate_service
 
 logger = logging.getLogger(__name__)
 
@@ -40,17 +41,24 @@ class OrderGrooveRecurringService:
             return NETVALVE_SANDBOX_BASE_URL
         return NETVALVE_PRODUCTION_BASE_URL
 
+    def _is_solidgate_flow(self, og_order_data: dict[str, Any]) -> bool:
+        """
+        Determine PSP from OrderGroove XML payload. Integrate your XML field here
+        (e.g. head.orderPsp, head.paymentProvider, or lookup from original order).
+        """
+        head = og_order_data.get("head", {})
+        # TODO: read from XML when integrated, e.g. return (head.get("orderPsp") or head.get("paymentProvider") or "").lower() == "solidgate"
+        return True  # default to Solidgate until XML PSP is wired
+
     async def process_recurring_order(
         self,
         og_order_data: dict[str, Any],
+        solidgate_recurring_token: str | None = None,
     ) -> dict[str, Any]:
         """
-        Full flow:
-          1. Extract data from OG XML payload
-          2. Get original order metadata (for Netvalve transactionID)
-          3. Create new Medusa order
-          4. Rebill via Netvalve
-          5. Capture payment on new order
+        Full flow: branch on PSP from XML (see _is_solidgate_flow).
+        - Solidgate: create full order, then Solidgate POST /recurring.
+        - Netvalve: create full order, then Netvalve POST /rebill, then capture.
         """
         head = og_order_data.get("head", {})
         customer = og_order_data.get("customer", {})
@@ -79,7 +87,6 @@ class OrderGrooveRecurringService:
 
         customer_id = customer.get("customerPartnerId", "")
         customer_email = customer.get("customerEmail", "")
-        region_id = None
 
         logger.info(
             f"[og-recurring] Processing OG order {og_order_id} — "
@@ -87,73 +94,123 @@ class OrderGrooveRecurringService:
             f"total={total_value} {currency}, items={len(item_list)}"
         )
 
-        # ── Step 1: Query original order for Netvalve transactionID ──
-        transaction_id = await self._get_original_transaction_id(original_order_id)
-        logger.info(
-            f"[og-recurring] Original order {original_order_id} → "
-            f"transactionID={transaction_id}"
-        )
+        if self._is_solidgate_flow(og_order_data):
+            # ── Solidgate flow: create full order (Solidgate payment init + complete), then call /recurring ──
+            if not solidgate_recurring_token:
+                raise RecurringOrderError(
+                    "Solidgate recurring token not found (orderTokenId from OrderGroove XML is required)",
+                    step="solidgate_token",
+                )
+            region_id = None
+            original_order_details = await self._get_order_details(original_order_id)
+            if original_order_details:
+                region_id = original_order_details.get("region_id")
+            if not region_id:
+                region_id = await self._get_default_region_id()
+            # Same as Netvalve: create cart, init payment (Solidgate provider), complete → real order, then /recurring
+            new_order = await self._create_medusa_order(
+                customer_id=customer_id,
+                customer_email=customer_email,
+                region_id=region_id,
+                items=item_list,
+                original_order=original_order_details,
+                og_customer=customer,
+                currency=currency,
+                original_transaction_id="",
+                payment_provider_override="pp_solidgate_solidgate",
+            )
+            new_order_id = new_order["order_id"]
+            new_cart_id = new_order["cart_id"]
+            cart_total = new_order.get("cart_total", 0.0)
+            amount = cart_total if cart_total > 0 else float(total_value)
+            amount_minor = int(round(amount * 100))
+            logger.info(
+                f"[og-recurring] Solidgate /recurring — amount={amount} ({amount_minor} minor), "
+                f"currency={currency}, order_id={new_order_id}"
+            )
+            recurring_result = await self._solidgate_recurring(
+                order_id=new_order_id,
+                amount=amount_minor,
+                currency=currency,
+                recurring_token=solidgate_recurring_token,
+                order_description=f"Recurring order {og_order_id}",
+                customer_email=customer_email or "",
+            )
+            logger.info(
+                "[og-recurring] Solidgate /recurring API return: %s",
+                recurring_result,
+            )
+            if not recurring_result.get("success"):
+                data = recurring_result.get("data") or recurring_result.get("error") or {}
+                msg = data.get("message") or data.get("error") or recurring_result.get("message", "Solidgate recurring failed")
+                raise RecurringOrderError(
+                    str(msg),
+                    step="solidgate_recurring",
+                )
+            logger.info(
+                f"[og-recurring] Solidgate /recurring success — order_id={new_order_id}"
+            )
+            return {
+                "og_order_id": og_order_id,
+                "original_order_id": original_order_id,
+                "new_order_id": new_order_id,
+                "new_cart_id": new_cart_id,
+                "solidgate_transaction_id": (recurring_result.get("data") or {}).get("transaction", {}).get("id")
+                or (recurring_result.get("data") or {}).get("transaction_id"),
+                "amount": amount,
+                "currency": currency,
+            }
+        else:
+            # ── Netvalve flow: create order, rebill, capture ──
+            transaction_id = await self._get_original_transaction_id(original_order_id)
+            logger.info(
+                f"[og-recurring] Original order {original_order_id} → "
+                f"transactionID={transaction_id}"
+            )
+            region_id = None
+            original_order_details = await self._get_order_details(original_order_id)
+            if original_order_details:
+                region_id = original_order_details.get("region_id")
+            if not region_id:
+                region_id = await self._get_default_region_id()
 
-        # ── Step 2: Get region + shipping from original order ──
-        original_order_details = await self._get_order_details(original_order_id)
-        if original_order_details:
-            region_id = original_order_details.get("region_id")
-
-        if not region_id:
-            region_id = await self._get_default_region_id()
-
-        # ── Step 3: Create new Medusa order ──
-        new_order = await self._create_medusa_order(
-            customer_id=customer_id,
-            customer_email=customer_email,
-            region_id=region_id,
-            items=item_list,
-            original_order=original_order_details,
-            og_customer=customer,
-            currency=currency,
-            original_transaction_id=transaction_id,
-        )
-        new_order_id = new_order["order_id"]
-        new_cart_id = new_order["cart_id"]
-        cart_total = new_order.get("cart_total", 0.0)
-        logger.info(
-            f"[og-recurring] New Medusa order created — "
-            f"order_id={new_order_id}, cart_id={new_cart_id}"
-        )
-
-        # ── Step 4: Rebill via Netvalve ──
-        # Use Medusa cart total (includes shipping) instead of OG orderTotalValue
-        amount = cart_total if cart_total > 0 else float(total_value)
-        logger.info(
-            f"[og-recurring] Rebill amount={amount} "
-            f"(cart_total={cart_total}, og_total={total_value})"
-        )
-        rebill_result = await self._netvalve_rebill(
-            transaction_id=transaction_id,
-            amount=amount,
-            client_order_id=new_order_id,
-        )
-        logger.info(
-            f"[og-recurring] Netvalve rebill success — "
-            f"new transactionID={rebill_result.get('transactionId')}"
-        )
-
-        # ── Step 5: Capture payment on new order ──
-        capture_result = await self._capture_new_order_payment(new_cart_id)
-        logger.info(
-            f"[og-recurring] Payment captured for order {new_order_id}"
-        )
-
-        return {
-            "og_order_id": og_order_id,
-            "original_order_id": original_order_id,
-            "new_order_id": new_order_id,
-            "new_cart_id": new_cart_id,
-            "transaction_id": transaction_id,
-            "rebill_transaction_id": rebill_result.get("transactionID") or rebill_result.get("transactionId"),
-            "amount": amount,
-            "currency": currency,
-        }
+            new_order = await self._create_medusa_order(
+                customer_id=customer_id,
+                customer_email=customer_email,
+                region_id=region_id,
+                items=item_list,
+                original_order=original_order_details,
+                og_customer=customer,
+                currency=currency,
+                original_transaction_id=transaction_id,
+            )
+            new_order_id = new_order["order_id"]
+            new_cart_id = new_order["cart_id"]
+            cart_total = new_order.get("cart_total", 0.0)
+            amount = cart_total if cart_total > 0 else float(total_value)
+            logger.info(
+                f"[og-recurring] Rebill amount={amount} "
+                f"(cart_total={cart_total}, og_total={total_value})"
+            )
+            rebill_result = await self._netvalve_rebill(
+                transaction_id=transaction_id,
+                amount=amount,
+                client_order_id=new_order_id,
+            )
+            capture_result = await self._capture_new_order_payment(new_cart_id)
+            logger.info(
+                f"[og-recurring] Payment captured for order {new_order_id}"
+            )
+            return {
+                "og_order_id": og_order_id,
+                "original_order_id": original_order_id,
+                "new_order_id": new_order_id,
+                "new_cart_id": new_cart_id,
+                "transaction_id": transaction_id,
+                "rebill_transaction_id": rebill_result.get("transactionID") or rebill_result.get("transactionId"),
+                "amount": amount,
+                "currency": currency,
+            }
 
     # ──────────────────────────────────────────────────────────────
     # Step 1: Get transactionID from original order metadata
@@ -345,6 +402,7 @@ class OrderGrooveRecurringService:
         og_customer: dict[str, Any],
         currency: str,
         original_transaction_id: str = "",
+        payment_provider_override: str | None = None,
     ) -> dict[str, str]:
         # 2a. Create cart
         cart_payload: dict[str, Any] = {"region_id": region_id}
@@ -420,10 +478,13 @@ class OrderGrooveRecurringService:
                 )
                 logger.info(f"[og-recurring] Shipping method {option_id} added to cart {cart_id}")
 
-        # 2e. Copy payment collection from original order
-        await self._init_payment_from_original_order(
-            cart_id, original_order, original_transaction_id
-        )
+        # 2e. Init payment so cart can complete: Solidgate recurring or Netvalve rebill
+        if payment_provider_override == "pp_solidgate_solidgate":
+            await self._init_payment_solidgate_recurring(cart_id)
+        else:
+            await self._init_payment_netvalve_rebill(
+                cart_id, original_order, original_transaction_id
+            )
 
         # 2f. Fetch cart total (includes shipping) before completing
         cart_result = await self.medusa.execute_request(
@@ -456,41 +517,122 @@ class OrderGrooveRecurringService:
             "cart_total": cart_total,
         }
 
-    async def _init_payment_from_original_order(
+    async def _create_medusa_order_solidgate(
         self,
-        cart_id: str,
+        customer_id: str,
+        customer_email: str,
+        region_id: str,
+        items: list[dict],
         original_order: dict | None,
-        original_transaction_id: str = "",
-    ) -> None:
-        """
-        Copy the payment collection setup from the original order onto the
-        new cart so Medusa can complete the cart without customer interaction.
+        og_customer: dict[str, Any],
+        currency: str,
+    ) -> dict[str, Any]:
+        """Create cart with items, addresses, shipping; return cart_id and cart_total. No payment or complete."""
+        cart_payload: dict[str, Any] = {"region_id": region_id}
+        if customer_email:
+            cart_payload["email"] = customer_email
 
-        Steps:
-          1. Get the cart's payment_collection (auto-created by Medusa)
-          2. Extract the provider_id and session data from the original order
-          3. Initialize a payment session with the same provider
-          4. Update the session data with auth proof so cart.complete() works
-        """
-        # ── Get the original order's payment session data ──
-        original_provider = "pp_netvalve_netvalve"
-        original_session_data: dict[str, Any] = {}
+        result = await self.medusa.execute_request(
+            endpoint="/store/carts",
+            method="POST",
+            payload=cart_payload,
+        )
+        if not result.success:
+            raise RecurringOrderError(
+                f"Failed to create cart: {result.message}",
+                step="create_cart",
+            )
+        cart = result.data.get("cart", {})
+        cart_id = cart.get("id")
+        logger.info(f"[og-recurring] Cart created (Solidgate): {cart_id}")
 
-        if original_order:
-            orig_pc = original_order.get("payment_collection") or {}
-            orig_sessions = orig_pc.get("payment_sessions", [])
-            if orig_sessions:
-                orig_session = orig_sessions[0]
-                original_provider = orig_session.get("provider_id", original_provider)
-                original_session_data = orig_session.get("data", {})
-                if isinstance(original_session_data, str):
-                    original_session_data = {}
-                logger.info(
-                    f"[og-recurring] Original payment session: provider={original_provider}, "
-                    f"data_keys={list(original_session_data.keys()) if isinstance(original_session_data, dict) else 'N/A'}"
+        for item in items:
+            variant_id = item.get("product_id", "")
+            qty = int(item.get("qty", "1"))
+            if not variant_id:
+                continue
+            add_result = await self.medusa.execute_request(
+                endpoint=f"/store/carts/{cart_id}/line-items",
+                method="POST",
+                payload={"variant_id": variant_id, "quantity": qty},
+            )
+            if not add_result.success:
+                raise RecurringOrderError(
+                    f"Failed to add item {variant_id}: {add_result.message}",
+                    step="add_line_item",
                 )
 
-        # ── Get or create the cart's payment collection ──
+        address_payload = self._build_address_payload(original_order, og_customer)
+        addr_result = await self.medusa.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="POST",
+            payload=address_payload,
+        )
+        if not addr_result.success:
+            raise RecurringOrderError(
+                f"Failed to set addresses: {addr_result.message}",
+                step="set_addresses",
+            )
+
+        shipping_result = await self.medusa.execute_request(
+            endpoint="/store/shipping-options",
+            method="GET",
+            params={"cart_id": cart_id},
+        )
+        if shipping_result.success:
+            options = shipping_result.data.get("shipping_options", [])
+            if options:
+                option_id = options[0].get("id")
+                await self.medusa.execute_request(
+                    endpoint=f"/store/carts/{cart_id}/shipping-methods",
+                    method="POST",
+                    payload={"option_id": option_id},
+                )
+
+        cart_result = await self.medusa.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="GET",
+        )
+        cart_total = 0.0
+        if cart_result.success:
+            raw_total = cart_result.data.get("cart", {}).get("total")
+            if raw_total is not None:
+                cart_total = float(raw_total)
+        return {"cart_id": cart_id, "cart_total": cart_total}
+
+    async def _solidgate_recurring(
+        self,
+        order_id: str,
+        amount: int,
+        currency: str,
+        recurring_token: str,
+        order_description: str = "Recurring order",
+        customer_email: str = "",
+    ) -> dict[str, Any]:
+        """Call Solidgate POST /recurring (1-click). amount in minor units. Returns result dict with success key."""
+        result = await solidgate_service.recurring(
+            order_id=order_id,
+            amount=amount,
+            currency=currency,
+            recurring_token=recurring_token,
+            order_description=order_description,
+            customer_email=customer_email,
+        )
+        # Log raw API response for testing
+        logger.info("[og-recurring] Solidgate /recurring raw response: %s", result)
+        if result.get("success") and result.get("status_code") in (200, 201, 204):
+            return {"success": True, "data": result.get("data")}
+        data = result.get("data") or {}
+        err = result.get("error")
+        msg = data.get("message") or data.get("error")
+        if not msg and isinstance(err, dict):
+            msg = err.get("message", "Recurring failed")
+        if not msg:
+            msg = err if err else "Recurring failed"
+        return {"success": False, "data": data, "message": str(msg)}
+
+    async def _get_or_create_payment_collection_id(self, cart_id: str) -> str:
+        """Get or create payment collection for cart. Returns payment_collection_id."""
         cart_result = await self.medusa.execute_request(
             endpoint=f"/store/carts/{cart_id}",
             method="GET",
@@ -501,11 +643,9 @@ class OrderGrooveRecurringService:
                 f"Failed to fetch cart {cart_id} for payment setup",
                 step="payment_get_cart",
             )
-
         cart_data = cart_result.data.get("cart", {})
         pc = cart_data.get("payment_collection") or {}
         payment_collection_id = pc.get("id")
-
         if not payment_collection_id:
             logger.info(f"[og-recurring] Cart {cart_id} has no payment collection — creating one")
             create_pc_result = await self.medusa.execute_request(
@@ -522,34 +662,34 @@ class OrderGrooveRecurringService:
             payment_collection_id = (
                 create_pc_result.data.get("payment_collection", {}).get("id")
             )
-
         if not payment_collection_id:
             raise RecurringOrderError(
                 f"Cart {cart_id} still has no payment_collection after creation attempt",
                 step="payment_no_collection",
             )
+        logger.info(f"[og-recurring] Cart {cart_id} payment_collection_id={payment_collection_id}")
+        return payment_collection_id
 
-        logger.info(
-            f"[og-recurring] Cart {cart_id} payment_collection_id={payment_collection_id}"
-        )
+    async def _init_payment_solidgate_recurring(self, cart_id: str) -> None:
+        """
+        Init payment on cart for Solidgate recurring. Uses pp_solidgate_solidgate and
+        session data so Medusa complete_cart succeeds without charging (charge is done via /recurring).
+        """
+        payment_collection_id = await self._get_or_create_payment_collection_id(cart_id)
+        provider_id = "pp_solidgate_solidgate"
 
-        # ── Initialize payment session with the same provider ──
         init_result = await self.medusa.execute_request(
             endpoint=f"/store/payment-collections/{payment_collection_id}/payment-sessions",
             method="POST",
-            payload={"provider_id": original_provider},
+            payload={"provider_id": provider_id},
         )
         if not init_result.success:
             raise RecurringOrderError(
-                f"Failed to initialize payment session on collection "
-                f"{payment_collection_id}: {init_result.message} — data={init_result.data}",
+                f"Failed to initialize Solidgate payment session: {init_result.message} — data={init_result.data}",
                 step="payment_init_session",
             )
-        logger.info(
-            f"[og-recurring] Payment session initialized — provider={original_provider}"
-        )
+        logger.info(f"[og-recurring] Payment session initialized — provider={provider_id} (Solidgate recurring)")
 
-        # ── Re-fetch to get the new session ID ──
         cart_result2 = await self.medusa.execute_request(
             endpoint=f"/store/carts/{cart_id}",
             method="GET",
@@ -560,7 +700,6 @@ class OrderGrooveRecurringService:
                 f"Failed to re-fetch cart {cart_id} after payment init",
                 step="payment_refetch",
             )
-
         sessions = (
             cart_result2.data.get("cart", {})
             .get("payment_collection", {})
@@ -571,12 +710,90 @@ class OrderGrooveRecurringService:
                 f"No payment sessions found after initialization on cart {cart_id}",
                 step="payment_no_sessions",
             )
-
         session_id = sessions[0].get("id")
 
-        # ── Update the session data — copy from original + mark as rebill-authorized ──
-        rebill_data: dict[str, Any] = {}
+        session_data: dict[str, Any] = {
+            "solidgate_recurring_authorized": True,
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        update_result = await self.medusa.execute_request(
+            endpoint=f"/store/payment-collections/{payment_collection_id}/payment-sessions/{session_id}",
+            method="POST",
+            payload={"data": session_data},
+        )
+        if not update_result.success:
+            logger.warning(
+                f"[og-recurring] Solidgate payment session update returned non-success: {update_result.message}"
+            )
+        logger.info(
+            f"[og-recurring] Payment session {session_id} configured for Solidgate recurring — keys={list(session_data.keys())}"
+        )
 
+    async def _init_payment_netvalve_rebill(
+        self,
+        cart_id: str,
+        original_order: dict | None,
+        original_transaction_id: str = "",
+    ) -> None:
+        """
+        Init payment on cart for Netvalve rebill. Copies provider and session data from
+        original order, then sets rebill auth proof so Medusa complete_cart succeeds
+        without calling POST /sale (actual charge is done via /rebill).
+        """
+        original_provider = "pp_netvalve_netvalve"
+        original_session_data: dict[str, Any] = {}
+
+        if original_order:
+            orig_pc = original_order.get("payment_collection") or {}
+            orig_sessions = orig_pc.get("payment_sessions", [])
+            if orig_sessions:
+                orig_session = orig_sessions[0]
+                original_provider = orig_session.get("provider_id", original_provider)
+                original_session_data = orig_session.get("data", {}) or {}
+                if isinstance(original_session_data, str):
+                    original_session_data = {}
+                logger.info(
+                    f"[og-recurring] Netvalve rebill: original provider={original_provider}, "
+                    f"data_keys={list(original_session_data.keys())}"
+                )
+
+        payment_collection_id = await self._get_or_create_payment_collection_id(cart_id)
+
+        init_result = await self.medusa.execute_request(
+            endpoint=f"/store/payment-collections/{payment_collection_id}/payment-sessions",
+            method="POST",
+            payload={"provider_id": original_provider},
+        )
+        if not init_result.success:
+            raise RecurringOrderError(
+                f"Failed to initialize Netvalve payment session: {init_result.message} — data={init_result.data}",
+                step="payment_init_session",
+            )
+        logger.info(f"[og-recurring] Payment session initialized — provider={original_provider} (Netvalve rebill)")
+
+        cart_result2 = await self.medusa.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="GET",
+            params={"fields": "+payment_collection.payment_sessions"},
+        )
+        if not cart_result2.success:
+            raise RecurringOrderError(
+                f"Failed to re-fetch cart {cart_id} after payment init",
+                step="payment_refetch",
+            )
+        sessions = (
+            cart_result2.data.get("cart", {})
+            .get("payment_collection", {})
+            .get("payment_sessions", [])
+        )
+        if not sessions:
+            raise RecurringOrderError(
+                f"No payment sessions found after initialization on cart {cart_id}",
+                step="payment_no_sessions",
+            )
+        session_id = sessions[0].get("id")
+
+        session_data: dict[str, Any] = {}
         if isinstance(original_session_data, dict):
             for key in (
                 "netvalve_order_id",
@@ -586,13 +803,8 @@ class OrderGrooveRecurringService:
                 "currency_code",
             ):
                 if key in original_session_data:
-                    rebill_data[key] = original_session_data[key]
-
-        # The Netvalve provider's authorizePayment has an idempotency guard:
-        #   if netvalve_sale_success === true && netvalve_transaction_id → AUTHORIZED
-        # This skips POST /sale entirely, which is what we want for rebill orders.
-        # Do NOT set hpf_completed or card_form_submitted — those trigger POST /sale.
-        rebill_data.update({
+                    session_data[key] = original_session_data[key]
+        session_data.update({
             "netvalve_transaction_id": original_transaction_id,
             "netvalve_sale_attempted": True,
             "netvalve_sale_success": True,
@@ -603,17 +815,14 @@ class OrderGrooveRecurringService:
         update_result = await self.medusa.execute_request(
             endpoint=f"/store/payment-collections/{payment_collection_id}/payment-sessions/{session_id}",
             method="POST",
-            payload={"data": rebill_data},
+            payload={"data": session_data},
         )
         if not update_result.success:
             logger.warning(
-                f"[og-recurring] Payment session update returned non-success "
-                f"(may be non-fatal): {update_result.message}"
+                f"[og-recurring] Netvalve payment session update returned non-success: {update_result.message}"
             )
-
         logger.info(
-            f"[og-recurring] Payment session {session_id} configured with "
-            f"rebill auth proof — keys={list(rebill_data.keys())}"
+            f"[og-recurring] Payment session {session_id} configured with Netvalve rebill auth proof — keys={list(session_data.keys())}"
         )
 
     # ──────────────────────────────────────────────────────────────

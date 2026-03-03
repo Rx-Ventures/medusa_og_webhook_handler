@@ -14,6 +14,7 @@ class TestTokenCustomer(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         String(50), primary_key=True, default=generate_ttc_id
     )
+    psp: Mapped[str] = mapped_column(String(64), nullable=False)
     customer_id: Mapped[str] = mapped_column(String(255), index=True)
     order_id: Mapped[str] = mapped_column(String(255), index=True)
     payment_token: Mapped[str | None] = mapped_column(Text, nullable=True)

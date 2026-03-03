@@ -296,7 +296,9 @@ class MedusaService:
                         "cart_id": cart_id,
                     },
                 )
-            logger.info(f"[settle_ok] Found existing order {order_id} for cart {cart_id}")
+            logger.info(
+                f"[settle_ok] Found existing order {order_id} for cart {cart_id}"
+            )
 
         # Step 2: Get payment session
         payment_session_id = await self.get_payment_session_id_from_cart(cart_id)
@@ -325,9 +327,7 @@ class MedusaService:
 
         # Step 4: Capture payment (skip if already captured)
         payment_detail = await self._get_payment_detail(payment_id)
-        already_captured = bool(
-            payment_detail and payment_detail.get("captured_at")
-        )
+        already_captured = bool(payment_detail and payment_detail.get("captured_at"))
 
         if already_captured:
             logger.info(
@@ -367,7 +367,9 @@ class MedusaService:
                 payload={"order_id": order_id},
             )
             if og_result.success:
-                logger.info(f"[settle_ok] OrderGroove enrollment triggered for order {order_id}")
+                logger.info(
+                    f"[settle_ok] OrderGroove enrollment triggered for order {order_id}"
+                )
             else:
                 logger.warning(
                     f"[settle_ok] OrderGroove enrollment failed for order {order_id}: {og_result.message}"
@@ -433,11 +435,25 @@ class MedusaService:
         )
 
         if update_result.success:
-            logger.info(f"[settle_ok] Order {order_id} metadata updated with payment_capture")
+            logger.info(
+                f"[settle_ok] Order {order_id} metadata updated with payment_capture"
+            )
         else:
             logger.warning(
                 f"[settle_ok] Failed to update order {order_id} metadata: {update_result.message}"
             )
+
+    async def trigger_ordergroove_purchase_post(
+        self,
+        order_id: str,
+        payment_override: dict,
+    ) -> GenericApiResponse:
+        """Call Medusa admin route to trigger OrderGroove Purchase POST (e.g. after Solidgate settle_ok)."""
+        return await self.execute_request(
+            endpoint="/admin/ordergroove/trigger-purchase-post",
+            method="POST",
+            payload={"order_id": order_id, "payment_override": payment_override},
+        )
 
 
 medusa_service = MedusaService()

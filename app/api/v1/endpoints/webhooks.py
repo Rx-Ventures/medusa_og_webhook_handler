@@ -1,10 +1,12 @@
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.dependencies import get_unit_of_work
 from app.core.exceptions import WebhookProcessingError
 from app.core.unit_of_work import UnitOfWork
+from app.models.test_token_customer import TestTokenCustomer
 from app.schemas.common import GenericApiResponse
 from app.schemas.webhook import WebhookEventCreate, WebhookEventResponse
 from app.services.idempotency_service import IdempotencyService
@@ -12,6 +14,77 @@ from app.services.medusa_service import medusa_service
 from app.services.slack_service import slack_service
 
 logger = logging.getLogger(__name__)
+
+
+# OrderGroove card type codes (same as Medusa subscriber)
+_OG_CARD_TYPE_MAP = {
+    "visa": "1",
+    "mastercard": "2",
+    "american express": "3",
+    "amex": "3",
+    "discover": "4",
+    "diners": "5",
+    "diners club": "5",
+    "jcb": "6",
+}
+
+
+def _get_solidgate_payment_token(payload: dict[str, Any]) -> str | None:
+    """Extract payment/card token from Solidgate settle_ok payload for storage."""
+    # Prefer card_token from the first auth transaction (reusable token)
+    transactions = payload.get("transactions") or {}
+    if isinstance(transactions, dict):
+        for tx in transactions.values():
+            if isinstance(tx, dict):
+                card_token = tx.get("card_token") or tx.get("cardToken")
+                if isinstance(card_token, dict):
+                    token = card_token.get("token")
+                    if isinstance(token, str) and token:
+                        return token
+                token = tx.get("card_token")  # might be string in some payloads
+                if isinstance(token, str) and token:
+                    return token
+    # Fallback: pay_form token
+    pay_form = payload.get("pay_form") or payload.get("payForm") or {}
+    token = pay_form.get("token")
+    if isinstance(token, str) and token:
+        return token
+    return None
+
+
+def _get_solidgate_payment_override(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Build payment_override for OrderGroove Purchase POST from Solidgate settle_ok.
+    Returns dict with token_id, cc_number (masked), cc_type (OG code), cc_exp_date, cc_holder if available.
+    """
+    token_id = _get_solidgate_payment_token(payload)
+    if not token_id:
+        return None
+
+    out: dict[str, Any] = {"token_id": token_id}
+
+    transactions = payload.get("transactions") or {}
+    if isinstance(transactions, dict):
+        for tx in transactions.values():
+            if not isinstance(tx, dict):
+                continue
+            card = tx.get("card")
+            if isinstance(card, dict):
+                num = card.get("number") or card.get("card_number")
+                if isinstance(num, str) and num:
+                    out["cc_number"] = num
+                brand = card.get("brand") or card.get("card_type") or ""
+                if isinstance(brand, str) and brand:
+                    out["cc_type"] = _OG_CARD_TYPE_MAP.get(
+                        brand.lower().strip(), "1"
+                    )
+                month = card.get("card_exp_month") or card.get("exp_month")
+                year = card.get("card_exp_year") or card.get("exp_year")
+                if month is not None and year is not None:
+                    out["cc_exp_date"] = f"{str(month).zfill(2)}/{year}"
+                break
+
+    return out
 
 router = APIRouter()
 
@@ -151,6 +224,57 @@ async def handle_solidgate_webhook(
 
         try:
             result = await medusa_service.process_settle_ok(cart_id)
+            # Persist token to zzz_test_token_customer for auditing / subscription use
+            payment_token = _get_solidgate_payment_token(payload)
+            customer_id = (
+                order.get("customer_email")
+                or order.get("customer_id")
+                or cart_id
+            )
+            if payment_token or customer_id:
+                try:
+                    # Use Medusa order_id so recurring can look up by originalOrderId
+                    order_id_for_token = (result.data or {}).get("order_id") or cart_id
+                    record = TestTokenCustomer(
+                        psp="solidgate",
+                        customer_id=customer_id,
+                        order_id=order_id_for_token,
+                        payment_token=payment_token,
+                    )
+                    uow.session.add(record)
+                except Exception as token_err:
+                    logger.warning(
+                        "Failed to save Solidgate token to zzz_test_token_customer: %s",
+                        token_err,
+                        exc_info=True,
+                    )
+            # Trigger OrderGroove Purchase POST (Solidgate flow; does not use auto-capture)
+            order_id = (result.data or {}).get("order_id")
+            payment_override = _get_solidgate_payment_override(payload)
+            if order_id and payment_override and payment_override.get("token_id"):
+                try:
+                    og_result = await medusa_service.trigger_ordergroove_purchase_post(
+                        order_id=order_id,
+                        payment_override=payment_override,
+                    )
+                    if og_result.success:
+                        logger.info(
+                            "OrderGroove Purchase POST triggered for Solidgate order %s",
+                            order_id,
+                        )
+                    else:
+                        logger.warning(
+                            "OrderGroove Purchase POST failed for order %s: %s",
+                            order_id,
+                            og_result.message,
+                        )
+                except Exception as og_err:
+                    logger.warning(
+                        "Failed to trigger OrderGroove Purchase POST for order %s: %s",
+                        order_id,
+                        og_err,
+                        exc_info=True,
+                    )
             await uow.webhook_events.mark_as_processed(webhook_event_id)
             await uow.commit()
             return result
