@@ -270,8 +270,9 @@ class MedusaService:
           A) Cart not yet completed → complete it, then capture.
           B) Cart already completed by FE → look up existing order, then capture.
 
-        After capture, triggers OrderGroove enrollment via the Medusa
-        admin route and writes payment_capture metadata.
+        After capture, writes payment_capture metadata. OrderGroove Purchase POST
+        for Solidgate is triggered by the webhook handler with the payment token,
+        not via enroll.
         """
 
         order_id: str | None = None
@@ -359,25 +360,10 @@ class MedusaService:
                 f"[settle_ok] Failed to write capture metadata for order {order_id}: {meta_err}"
             )
 
-        # Step 6: Trigger OrderGroove enrollment
-        try:
-            og_result = await self.execute_request(
-                endpoint="/admin/ordergroove/enroll",
-                method="POST",
-                payload={"order_id": order_id},
-            )
-            if og_result.success:
-                logger.info(
-                    f"[settle_ok] OrderGroove enrollment triggered for order {order_id}"
-                )
-            else:
-                logger.warning(
-                    f"[settle_ok] OrderGroove enrollment failed for order {order_id}: {og_result.message}"
-                )
-        except Exception as og_err:
-            logger.warning(
-                f"[settle_ok] OrderGroove enrollment error for order {order_id}: {og_err}"
-            )
+        # OrderGroove Purchase POST for Solidgate is triggered by the webhook handler
+        # (trigger_ordergroove_purchase_post with token from settle_ok payload), not
+        # via enroll. Enroll is for Netvalve (called from Medusa order-placed flow).
+        # Do not call /admin/ordergroove/enroll here to avoid duplicate Purchase POST.
 
         logger.info("Successfully settled order: %s", order_id)
         return GenericApiResponse(

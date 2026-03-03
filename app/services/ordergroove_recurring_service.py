@@ -1,14 +1,15 @@
 """
 OrderGroove Recurring Order Processing Service.
 
-Handles the full flow when OrderGroove sends a recurring order placement:
-  1. Query the original Medusa order to get the Netvalve transactionID from metadata
-  2. Create a new Medusa order (cart → line items → shipping → payment → complete)
-  3. Call Netvalve POST /rebill with the original transactionID + new order amount
-  4. Capture the payment on the newly created order
+Handles the full flow when OrderGroove sends a recurring order placement.
 
-The Netvalve /rebill endpoint charges the same card used in the original transaction
-without needing card details or a payment token again.
+- Solidgate: Create a cart only (items, addresses, shipping, Solidgate payment session).
+  Call Solidgate POST /recurring with order_id=cart_id. When Solidgate sends settle_ok,
+  the existing /solidgate webhook runs process_settle_ok(cart_id) and completes the cart
+  → order, capture, metadata, and OrderGroove Purchase POST.
+
+- Netvalve: Create a full Medusa order (cart → complete), call Netvalve POST /rebill
+  with the original transactionID, then capture the new order payment.
 """
 
 import logging
@@ -43,12 +44,21 @@ class OrderGrooveRecurringService:
 
     def _is_solidgate_flow(self, og_order_data: dict[str, Any]) -> bool:
         """
-        Determine PSP from OrderGroove XML payload. Integrate your XML field here
-        (e.g. head.orderPsp, head.paymentProvider, or lookup from original order).
+        Determine PSP from OrderGroove order-placement payload using paymentLabel.
+        Expects head.paymentLabel or head.orderPaymentLabel to be "solidgate" or "netvalve".
         """
         head = og_order_data.get("head", {})
-        # TODO: read from XML when integrated, e.g. return (head.get("orderPsp") or head.get("paymentProvider") or "").lower() == "solidgate"
-        return True  # default to Solidgate until XML PSP is wired
+        payment_label = (
+            head.get("paymentLabel") or head.get("orderPaymentLabel") or ""
+        )
+        value = (payment_label or "").strip().lower()
+        is_solidgate = value == "solidgate"
+        logger.info(
+            "[og-recurring] paymentLabel=%s → flow=%s",
+            payment_label or "(empty)",
+            "solidgate" if is_solidgate else "netvalve",
+        )
+        return is_solidgate
 
     async def process_recurring_order(
         self,
@@ -95,7 +105,9 @@ class OrderGrooveRecurringService:
         )
 
         if self._is_solidgate_flow(og_order_data):
-            # ── Solidgate flow: create full order (Solidgate payment init + complete), then call /recurring ──
+            # ── Solidgate flow: create cart only (no complete). Pass cart_id as order_id to
+            #    /recurring so Solidgate settle_ok webhook receives that cart_id and
+            #    process_settle_ok completes the cart → order, capture, Purchase POST.
             if not solidgate_recurring_token:
                 raise RecurringOrderError(
                     "Solidgate recurring token not found (orderTokenId from OrderGroove XML is required)",
@@ -107,8 +119,8 @@ class OrderGrooveRecurringService:
                 region_id = original_order_details.get("region_id")
             if not region_id:
                 region_id = await self._get_default_region_id()
-            # Same as Netvalve: create cart, init payment (Solidgate provider), complete → real order, then /recurring
-            new_order = await self._create_medusa_order(
+
+            cart_result = await self._create_medusa_order_solidgate(
                 customer_id=customer_id,
                 customer_email=customer_email,
                 region_id=region_id,
@@ -116,20 +128,20 @@ class OrderGrooveRecurringService:
                 original_order=original_order_details,
                 og_customer=customer,
                 currency=currency,
-                original_transaction_id="",
-                payment_provider_override="pp_solidgate_solidgate",
             )
-            new_order_id = new_order["order_id"]
-            new_cart_id = new_order["cart_id"]
-            cart_total = new_order.get("cart_total", 0.0)
+            new_cart_id = cart_result["cart_id"]
+            cart_total = cart_result.get("cart_total", 0.0)
             amount = cart_total if cart_total > 0 else float(total_value)
             amount_minor = int(round(amount * 100))
+
+            await self._init_payment_solidgate_recurring(new_cart_id)
+
             logger.info(
                 f"[og-recurring] Solidgate /recurring — amount={amount} ({amount_minor} minor), "
-                f"currency={currency}, order_id={new_order_id}"
+                f"currency={currency}, order_id={new_cart_id} (cart_id; order created on settle_ok)"
             )
             recurring_result = await self._solidgate_recurring(
-                order_id=new_order_id,
+                order_id=new_cart_id,
                 amount=amount_minor,
                 currency=currency,
                 recurring_token=solidgate_recurring_token,
@@ -148,13 +160,13 @@ class OrderGrooveRecurringService:
                     step="solidgate_recurring",
                 )
             logger.info(
-                f"[og-recurring] Solidgate /recurring success — order_id={new_order_id}"
+                f"[og-recurring] Solidgate /recurring success — cart_id={new_cart_id} (order will be created on settle_ok)"
             )
             return {
                 "og_order_id": og_order_id,
                 "original_order_id": original_order_id,
-                "new_order_id": new_order_id,
                 "new_cart_id": new_cart_id,
+                "new_order_id": None,
                 "solidgate_transaction_id": (recurring_result.get("data") or {}).get("transaction", {}).get("id")
                 or (recurring_result.get("data") or {}).get("transaction_id"),
                 "amount": amount,
@@ -276,8 +288,11 @@ class OrderGrooveRecurringService:
 
         order = result.data.get("order", {})
 
+        # Medusa v2 Admin API uses payment_collections (plural); some versions use
+        # payment_collection (singular). Try plural first to avoid 500 on invalid fields.
         for pc_fields in (
-            "+payment_collection.payment_sessions",
+            "payment_collections",
+            "+payment_collections",
             "+payment_collection",
             "payment_collection",
         ):
@@ -286,21 +301,26 @@ class OrderGrooveRecurringService:
                 method="GET",
                 params={"fields": pc_fields},
             )
-            if pc_result.success:
-                pc_order = pc_result.data.get("order", {})
-                pc = pc_order.get("payment_collection")
-                if pc:
-                    order["payment_collection"] = pc
-                    logger.info(
-                        f"[og-recurring] Original order payment_collection loaded "
-                        f"(fields={pc_fields}) — sessions={len(pc.get('payment_sessions', []))}"
-                    )
-                    break
-            else:
+            if not pc_result.success:
                 logger.debug(
                     f"[og-recurring] payment_collection query failed with "
                     f"fields={pc_fields}: {pc_result.message}"
                 )
+                continue
+            pc_order = pc_result.data.get("order", {})
+            # Support both singular (legacy) and plural (Medusa v2)
+            pc = pc_order.get("payment_collection")
+            if not pc and pc_order.get("payment_collections"):
+                collections = pc_order["payment_collections"]
+                pc = collections[0] if isinstance(collections, list) and collections else None
+            if pc:
+                order["payment_collection"] = pc
+                sessions = pc.get("payment_sessions") or pc.get("payments") or []
+                logger.info(
+                    f"[og-recurring] Original order payment_collection loaded "
+                    f"(fields={pc_fields}) — sessions={len(sessions)}"
+                )
+                break
         else:
             logger.warning(
                 f"[og-recurring] Could not fetch payment_collection for {order_id} "
