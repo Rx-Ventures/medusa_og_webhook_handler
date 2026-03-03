@@ -243,19 +243,60 @@ class MedusaService:
         logger.info(f"Payment captured: {payment_id}")
         return result.data.get("payment")
 
-    async def process_settle_ok(self, cart_id: str) -> GenericApiResponse:
+    async def get_order_by_cart_id(self, cart_id: str) -> str | None:
+        """Look up the Medusa order ID from a cart that was already completed."""
+        result = await self.execute_request(
+            endpoint="/admin/orders",
+            method="GET",
+            params={"cart_id": cart_id, "fields": "id"},
+        )
 
-        # Step 1: Complete cart
+        if not result.success:
+            logger.warning(f"Order lookup by cart_id failed: {result.message}")
+            return None
+
+        orders = result.data.get("orders", [])
+        if orders:
+            return orders[0].get("id")
+
+        logger.warning(f"No order found for cart: {cart_id}")
+        return None
+
+    async def process_settle_ok(self, cart_id: str) -> GenericApiResponse:
+        """
+        Process a Solidgate settle_ok webhook.
+
+        Handles two scenarios:
+          A) Cart not yet completed → complete it, then capture.
+          B) Cart already completed by FE → look up existing order, then capture.
+
+        After capture, triggers OrderGroove enrollment via the Medusa
+        admin route and writes payment_capture metadata.
+        """
+
+        order_id: str | None = None
+
+        # Step 1: Try to complete cart (idempotent — may already be completed)
         cart_result = await self.complete_cart(cart_id)
-        if not cart_result:
-            raise WebhookProcessingError(
-                message=f"Failed to complete cart: {cart_id}",
-                details={
-                    "step": "complete_cart",
-                    "cart_id": cart_id,
-                },
+
+        if cart_result:
+            order_id = cart_result["order_id"]
+            logger.info(f"[settle_ok] Cart completed → order {order_id}")
+        else:
+            # Cart was likely already completed by the FE — look up the order
+            logger.info(
+                f"[settle_ok] Cart {cart_id} already completed — looking up order"
             )
-        order_id = cart_result["order_id"]
+            order_id = await self.get_order_by_cart_id(cart_id)
+            if not order_id:
+                raise WebhookProcessingError(
+                    message=f"Failed to complete cart and no existing order found: {cart_id}",
+                    details={
+                        "step": "complete_cart",
+                        "cart_id": cart_id,
+                    },
+                )
+            logger.info(f"[settle_ok] Found existing order {order_id} for cart {cart_id}")
 
         # Step 2: Get payment session
         payment_session_id = await self.get_payment_session_id_from_cart(cart_id)
@@ -282,17 +323,58 @@ class MedusaService:
                 },
             )
 
-        # Step 4: Capture payment
-        capture_result = await self.capture_payment(payment_id)
-        if not capture_result:
-            raise WebhookProcessingError(
-                message=f"Failed to capture payment: {payment_id}",
-                details={
-                    "step": "capture_payment",
-                    "cart_id": cart_id,
-                    "order_id": order_id,
-                    "payment_id": payment_id,
-                },
+        # Step 4: Capture payment (skip if already captured)
+        payment_detail = await self._get_payment_detail(payment_id)
+        already_captured = bool(
+            payment_detail and payment_detail.get("captured_at")
+        )
+
+        if already_captured:
+            logger.info(
+                f"[settle_ok] Payment {payment_id} already captured — skipping capture"
+            )
+        else:
+            capture_result = await self.capture_payment(payment_id)
+            if not capture_result:
+                raise WebhookProcessingError(
+                    message=f"Failed to capture payment: {payment_id}",
+                    details={
+                        "step": "capture_payment",
+                        "cart_id": cart_id,
+                        "order_id": order_id,
+                        "payment_id": payment_id,
+                    },
+                )
+            logger.info(f"[settle_ok] Payment {payment_id} captured")
+
+        # Step 5: Write payment_capture metadata to order
+        try:
+            await self._write_solidgate_capture_metadata(
+                order_id=order_id,
+                cart_id=cart_id,
+                payment_id=payment_id,
+            )
+        except Exception as meta_err:
+            logger.warning(
+                f"[settle_ok] Failed to write capture metadata for order {order_id}: {meta_err}"
+            )
+
+        # Step 6: Trigger OrderGroove enrollment
+        try:
+            og_result = await self.execute_request(
+                endpoint="/admin/ordergroove/enroll",
+                method="POST",
+                payload={"order_id": order_id},
+            )
+            if og_result.success:
+                logger.info(f"[settle_ok] OrderGroove enrollment triggered for order {order_id}")
+            else:
+                logger.warning(
+                    f"[settle_ok] OrderGroove enrollment failed for order {order_id}: {og_result.message}"
+                )
+        except Exception as og_err:
+            logger.warning(
+                f"[settle_ok] OrderGroove enrollment error for order {order_id}: {og_err}"
             )
 
         logger.info("Successfully settled order: %s", order_id)
@@ -302,6 +384,60 @@ class MedusaService:
             status_code=status.HTTP_200_OK,
             data={"order_id": order_id, "payment_id": payment_id, "cart_id": cart_id},
         )
+
+    async def _get_payment_detail(self, payment_id: str) -> dict | None:
+        """Fetch a single payment record to check captured_at status."""
+        result = await self.execute_request(
+            endpoint=f"/admin/payments/{payment_id}",
+            method="GET",
+        )
+        if not result.success:
+            return None
+        return result.data.get("payment")
+
+    async def _write_solidgate_capture_metadata(
+        self,
+        order_id: str,
+        cart_id: str,
+        payment_id: str,
+    ) -> None:
+        """Write payment_capture metadata for Solidgate to the Medusa order."""
+        existing = await self.execute_request(
+            endpoint=f"/admin/orders/{order_id}",
+            method="GET",
+            params={"fields": "id,metadata"},
+        )
+
+        existing_metadata = {}
+        if existing.success:
+            existing_metadata = existing.data.get("order", {}).get("metadata", {}) or {}
+
+        payment_capture = {
+            "provider_id": "pp_solidgate_solidgate",
+            "payment_label": "Solidgate",
+            "payment_id": payment_id,
+            "cart_id": cart_id,
+            "captured_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "captured_via": "solidgate_webhook_settle_ok",
+        }
+
+        merged_metadata = {
+            **existing_metadata,
+            "payment_capture": payment_capture,
+        }
+
+        update_result = await self.execute_request(
+            endpoint=f"/admin/orders/{order_id}",
+            method="POST",
+            payload={"metadata": merged_metadata},
+        )
+
+        if update_result.success:
+            logger.info(f"[settle_ok] Order {order_id} metadata updated with payment_capture")
+        else:
+            logger.warning(
+                f"[settle_ok] Failed to update order {order_id} metadata: {update_result.message}"
+            )
 
 
 medusa_service = MedusaService()
