@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     NETVALVE_BASIC_AUTH_USERNAME: str = ""
     NETVALVE_BASIC_AUTH_PASSWORD: str = ""
 
+    SOLIDGATE_RECURRING_IP: str = "203.0.113.0"
+
     SLACK_ALERTS_URL: str
 
     model_config = SettingsConfigDict(
