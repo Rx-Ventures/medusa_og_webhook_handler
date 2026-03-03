@@ -952,10 +952,13 @@ class NetValveService:
         site_id = self.site_id
         mid_id = _resolve_netvalve_mid_id(currency_code) or ""
 
-        client_order_id = (
+        client_order_id_base = (
             _pick_string(data, "cartId", "cart_id", "client_order_id", "id")
-            or f"medusa_{int(time.time())}"
+            or "medusa"
         )
+        # Append a timestamp suffix so every /sale attempt gets a unique
+        # client_order_id — even when the same cart retries after a decline.
+        client_order_id = f"{client_order_id_base}_{int(time.time() * 1000)}"
 
         # Step 4: Resolve enrichment fields
         raw_desc = (
