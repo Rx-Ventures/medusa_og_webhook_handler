@@ -25,3 +25,9 @@ class PaymentInitializeResponse(BaseModel):
     merchant: str
     signature: str
     payment_intent: str
+
+
+class UpdateReferenceRequest(BaseModel):
+    """Maps a Solidgate payment (keyed by cart_id) to the final Medusa order_id."""
+    cart_id: str
+    order_id: str
