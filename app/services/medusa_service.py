@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 MEDUSA_TOKEN_KEY = "medusa:admin_token"
 
+
 class MedusaService:
     def __init__(self):
         self.base_url = settings.MEDUSA_BASE_URL
@@ -170,11 +171,18 @@ class MedusaService:
         )
 
         if not result.success:
-            logger.error(f"Complete cart failed: {result.message}")
+            logger.error(
+                f"Complete cart failed: {result.message} — "
+                f"status={result.status_code}, data={result.data}"
+            )
             return None
 
         if not result.data or result.data.get("type") != "order":
-            logger.warning(f"Cart not ready for completion: {cart_id}")
+            logger.warning(
+                f"Cart not ready for completion: {cart_id} — "
+                f"type={result.data.get('type') if result.data else 'N/A'}, "
+                f"data={result.data}"
+            )
             return None
 
         order = result.data.get("order", {})
@@ -236,7 +244,7 @@ class MedusaService:
         return result.data.get("payment")
 
     async def process_settle_ok(self, cart_id: str) -> GenericApiResponse:
-       
+
         # Step 1: Complete cart
         cart_result = await self.complete_cart(cart_id)
         if not cart_result:

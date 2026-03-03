@@ -35,18 +35,15 @@ class Settings(BaseSettings):
     MEDUSA_PUBLISHABLE_KEY: str
 
     # ── NetValve payment gateway settings ──
-    # Required
     NETVALVE_API_KEY: str = ""
-    # Optional credentials & identifiers
     NETVALVE_CLIENT_ID: str = ""
     NETVALVE_SITE_ID: str = ""
     NETVALVE_MID_ID_EUR: str = ""
     NETVALVE_MID_ID_USD: str = ""
     NETVALVE_MID_ID_PHP: str = ""
-    # Environment: "sandbox" or "production"
     NETVALVE_ENVIRONMENT: str = "production"
-    # URL overrides
     NETVALVE_BASE_URL: str = ""
+    NETVALVE_PAYMENT_API_URL: str = ""
     NETVALVE_SANDBOX_BASE_URL: str = ""
     NETVALVE_PRODUCTION_BASE_URL: str = ""
     NETVALVE_BACKOFFICE_API_URL: str = ""

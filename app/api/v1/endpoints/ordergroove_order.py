@@ -24,6 +24,10 @@ from app.core.dependencies import get_unit_of_work
 from app.core.unit_of_work import UnitOfWork
 from app.schemas.webhook import WebhookEventCreate
 from app.services.idempotency_service import IdempotencyService
+from app.services.ordergroove_recurring_service import (
+    og_recurring_service,
+    RecurringOrderError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,13 +178,55 @@ async def handle_ordergroove_order_placement(
 
     if result is None:
         logger.info(f"OrderGroove order already processed: {event_id}")
+        return Response(
+            content=XML_SUCCESS_TEMPLATE.format(order_id=og_order_id or event_id),
+            media_type="application/xml",
+            status_code=200,
+        )
 
-    response_xml = XML_SUCCESS_TEMPLATE.format(order_id=og_order_id or event_id)
+    # ── Process the recurring order: Create Order → Rebill → Capture ──
+    try:
+        recurring_result = await og_recurring_service.process_recurring_order(
+            og_order_data=order_data,
+        )
 
-    logger.info(f"Responding to OrderGroove with SUCCESS for order {og_order_id}")
+        new_order_id = recurring_result["new_order_id"]
 
-    return Response(
-        content=response_xml,
-        media_type="application/xml",
-        status_code=200,
-    )
+        logger.info(
+            f"[og-recurring] Full flow completed — OG order {og_order_id} → "
+            f"Medusa order {new_order_id}, "
+            f"rebill txn={recurring_result.get('rebill_transaction_id')}"
+        )
+
+        response_xml = XML_SUCCESS_TEMPLATE.format(order_id=new_order_id)
+        logger.info(f"Responding to OrderGroove with SUCCESS — orderId={new_order_id}")
+
+        return Response(
+            content=response_xml,
+            media_type="application/xml",
+            status_code=200,
+        )
+
+    except RecurringOrderError as exc:
+        logger.error(
+            f"[og-recurring] Failed at step '{exc.step}': {exc.message}"
+        )
+        return Response(
+            content=XML_ERROR_TEMPLATE.format(
+                error_code="010",
+                error_msg=f"Order processing failed: {exc.message}",
+            ),
+            media_type="application/xml",
+            status_code=200,
+        )
+
+    except Exception as exc:
+        logger.exception(f"[og-recurring] Unexpected error processing OG order {og_order_id}")
+        return Response(
+            content=XML_ERROR_TEMPLATE.format(
+                error_code="099",
+                error_msg=f"Unexpected error: {str(exc)}",
+            ),
+            media_type="application/xml",
+            status_code=200,
+        )
