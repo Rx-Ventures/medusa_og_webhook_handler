@@ -81,6 +81,9 @@ def _get_solidgate_payment_override(payload: dict[str, Any]) -> dict[str, Any] |
                 year = card.get("card_exp_year") or card.get("exp_year")
                 if month is not None and year is not None:
                     out["cc_exp_date"] = f"{str(month).zfill(2)}/{year}"
+                holder = card.get("card_holder") or card.get("cardholder_name")
+                if isinstance(holder, str) and holder.strip():
+                    out["cc_holder"] = holder.strip()
                 break
 
     return out
