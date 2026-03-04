@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     payments,
     test_token_customer,
     ordergroove_order,
+    solidgate,
 )
 from app.api.v1.endpoints import webhooks, payments
 from app.api.v1.endpoints.netvalve.router import netvalve_router
@@ -35,4 +36,12 @@ api_router.include_router(
     netvalve_router,
     prefix="/netvalve",
     tags=["netvalve"],
+)
+
+# Solidgate routes — prefix /solidgate
+# Full paths: /api/v1/solidgate/refund
+api_router.include_router(
+    solidgate.router,
+    prefix="/solidgate",
+    tags=["solidgate"],
 )
