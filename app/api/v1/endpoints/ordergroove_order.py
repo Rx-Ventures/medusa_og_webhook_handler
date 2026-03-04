@@ -18,12 +18,15 @@ import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import parse_qs, unquote_plus
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from app.core.dependencies import get_unit_of_work
 from app.core.unit_of_work import UnitOfWork
+from app.models.test_token_customer import TestTokenCustomer
 from app.schemas.webhook import WebhookEventCreate
 from app.services.idempotency_service import IdempotencyService
+from app.services.ordergroove_purchase_service import trigger_purchase_post
 from app.services.ordergroove_recurring_service import (
     og_recurring_service,
     RecurringOrderError,
@@ -236,3 +239,60 @@ async def handle_ordergroove_order_placement(
             media_type="application/xml",
             status_code=200,
         )
+
+
+# ─── OrderGroove Purchase POST (triggered by Medusa or internally) ─────────────────
+
+
+@router.post("/trigger-purchase-post")
+async def ordergroove_trigger_purchase_post(
+    body: dict,
+    uow: UnitOfWork = Depends(get_unit_of_work),
+):
+    """
+    Trigger OrderGroove Purchase POST (subscription/create).
+    Body: order_id, payment_override (token_id required; cc_number, cc_holder, cc_exp_date, cc_type, label optional),
+    optional store_token: { psp, customer_id, order_id, payment_token } to persist token after success.
+    """
+    order_id = body.get("order_id")
+    payment_override = body.get("payment_override") or {}
+    store_token = body.get("store_token")
+
+    if not order_id:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "message": "Missing order_id"},
+        )
+    if not payment_override.get("token_id"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "message": "Missing payment_override.token_id (required for Purchase POST)"},
+        )
+
+    result = await trigger_purchase_post(order_id=order_id, payment_override=payment_override)
+
+    if result.get("success") and store_token:
+        try:
+            record = TestTokenCustomer(
+                psp=store_token.get("psp", ""),
+                customer_id=store_token.get("customer_id", ""),
+                order_id=store_token.get("order_id", order_id),
+                payment_token=store_token.get("payment_token", ""),
+            )
+            uow.session.add(record)
+            await uow.commit()
+            logger.info("[ordergroove] Token stored in webhook BE — order=%s", order_id)
+        except Exception as token_err:
+            logger.warning("Failed to save token to zzz_test_token_customer: %s", token_err)
+            try:
+                await uow.rollback()
+            except Exception:
+                pass
+
+    if result.get("success"):
+        return {"success": True, "message": "OrderGroove Purchase POST completed", "data": result.get("data")}
+    status_code = status.HTTP_502_BAD_GATEWAY if (result.get("status_code") or 0) >= 400 else status.HTTP_500_INTERNAL_SERVER_ERROR
+    return JSONResponse(
+        status_code=status_code,
+        content={"success": False, "message": "OrderGroove Purchase POST failed", "error": result.get("error")},
+    )
