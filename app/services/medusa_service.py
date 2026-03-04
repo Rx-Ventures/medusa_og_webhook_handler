@@ -360,6 +360,17 @@ class MedusaService:
                 f"[settle_ok] Failed to write capture metadata for order {order_id}: {meta_err}"
             )
 
+        # Step 6: Enrich payment session with solidgate_order_id for future refunds
+        try:
+            await self._write_solidgate_session_data(
+                payment_session_id=payment_session_id,
+                cart_id=cart_id,
+            )
+        except Exception as session_err:
+            logger.warning(
+                f"[settle_ok] Failed to enrich payment session with solidgate_order_id: {session_err}"
+            )
+
         # OrderGroove Purchase POST for Solidgate is triggered by the webhook handler
         # (trigger_ordergroove_purchase_post with token from settle_ok payload), not
         # via enroll. Enroll is for Netvalve (called from Medusa order-placed flow).
@@ -427,6 +438,35 @@ class MedusaService:
         else:
             logger.warning(
                 f"[settle_ok] Failed to update order {order_id} metadata: {update_result.message}"
+            )
+
+    async def _write_solidgate_session_data(
+        self,
+        payment_session_id: str,
+        cart_id: str,
+    ) -> None:
+        """
+        Enrich the payment session data with solidgate_order_id (cart_id)
+        so that future refundPayment() calls can identify the Solidgate order.
+        Calls the custom admin endpoint POST /admin/solidgate/update-session-data.
+        """
+        result = await self.execute_request(
+            endpoint="/admin/solidgate/update-session-data",
+            method="POST",
+            payload={
+                "payment_session_id": payment_session_id,
+                "data": {"solidgate_order_id": cart_id},
+            },
+        )
+        if result.success:
+            logger.info(
+                f"[settle_ok] Payment session {payment_session_id} enriched with "
+                f"solidgate_order_id={cart_id}"
+            )
+        else:
+            logger.warning(
+                f"[settle_ok] Failed to enrich session {payment_session_id}: "
+                f"{result.message}"
             )
 
     async def get_cart_metadata(self, cart_id: str) -> dict:
