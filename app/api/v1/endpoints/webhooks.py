@@ -75,9 +75,8 @@ def _get_solidgate_payment_override(payload: dict[str, Any]) -> dict[str, Any] |
                     out["cc_number"] = num
                 brand = card.get("brand") or card.get("card_type") or ""
                 if isinstance(brand, str) and brand:
-                    out["cc_type"] = _OG_CARD_TYPE_MAP.get(
-                        brand.lower().strip(), "1"
-                    )
+                    # Leave cc_type blank if not in OG_CARD_TYPE_MAP
+                    out["cc_type"] = _OG_CARD_TYPE_MAP.get(brand.lower().strip(), "")
                 month = card.get("card_exp_month") or card.get("exp_month")
                 year = card.get("card_exp_year") or card.get("exp_year")
                 if month is not None and year is not None:
@@ -248,33 +247,41 @@ async def handle_solidgate_webhook(
                         token_err,
                         exc_info=True,
                     )
-            # Trigger OrderGroove Purchase POST (Solidgate flow; does not use auto-capture)
+            # Trigger OrderGroove Purchase POST only for initial checkout (not recurring)
             order_id = (result.data or {}).get("order_id")
-            payment_override = _get_solidgate_payment_override(payload)
-            if order_id and payment_override and payment_override.get("token_id"):
-                try:
-                    og_result = await medusa_service.trigger_ordergroove_purchase_post(
-                        order_id=order_id,
-                        payment_override=payment_override,
-                    )
-                    if og_result.success:
-                        logger.info(
-                            "OrderGroove Purchase POST triggered for Solidgate order %s",
-                            order_id,
+            cart_metadata = await medusa_service.get_cart_metadata(cart_id)
+            is_recurring = cart_metadata.get("recurring_order") is True
+            if is_recurring:
+                logger.info(
+                    "Skipping OrderGroove Purchase POST for recurring order (cart_id=%s)",
+                    cart_id,
+                )
+            else:
+                payment_override = _get_solidgate_payment_override(payload)
+                if order_id and payment_override and payment_override.get("token_id"):
+                    try:
+                        og_result = await medusa_service.trigger_ordergroove_purchase_post(
+                            order_id=order_id,
+                            payment_override=payment_override,
                         )
-                    else:
+                        if og_result.success:
+                            logger.info(
+                                "OrderGroove Purchase POST triggered for Solidgate order %s",
+                                order_id,
+                            )
+                        else:
+                            logger.warning(
+                                "OrderGroove Purchase POST failed for order %s: %s",
+                                order_id,
+                                og_result.message,
+                            )
+                    except Exception as og_err:
                         logger.warning(
-                            "OrderGroove Purchase POST failed for order %s: %s",
+                            "Failed to trigger OrderGroove Purchase POST for order %s: %s",
                             order_id,
-                            og_result.message,
+                            og_err,
+                            exc_info=True,
                         )
-                except Exception as og_err:
-                    logger.warning(
-                        "Failed to trigger OrderGroove Purchase POST for order %s: %s",
-                        order_id,
-                        og_err,
-                        exc_info=True,
-                    )
             await uow.webhook_events.mark_as_processed(webhook_event_id)
             await uow.commit()
             return result

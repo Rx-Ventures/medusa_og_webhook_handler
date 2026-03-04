@@ -429,6 +429,18 @@ class MedusaService:
                 f"[settle_ok] Failed to update order {order_id} metadata: {update_result.message}"
             )
 
+    async def get_cart_metadata(self, cart_id: str) -> dict:
+        """Get cart metadata (e.g. to check recurring_order). Uses store API."""
+        result = await self.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="GET",
+            params={"fields": "metadata"},
+        )
+        if not result.success:
+            return {}
+        cart = result.data.get("cart", {})
+        return cart.get("metadata") or {}
+
     async def trigger_ordergroove_purchase_post(
         self,
         order_id: str,

@@ -3,13 +3,15 @@ OrderGroove Recurring Order Processing Service.
 
 Handles the full flow when OrderGroove sends a recurring order placement.
 
-- Solidgate: Create a cart only (items, addresses, shipping, Solidgate payment session).
-  Call Solidgate POST /recurring with order_id=cart_id. When Solidgate sends settle_ok,
-  the existing /solidgate webhook runs process_settle_ok(cart_id) and completes the cart
-  → order, capture, metadata, and OrderGroove Purchase POST.
+- Solidgate: Create a cart only (items, addresses, shipping, Solidgate payment session),
+  mark cart metadata.recurring_order=true. Call Solidgate POST /recurring with
+  order_id=cart_id. When Solidgate sends settle_ok, the /solidgate webhook runs
+  process_settle_ok(cart_id) and completes the cart → order, capture, metadata.
+  Recurring orders do not trigger OrderGroove Purchase POST (no second subscription).
 
-- Netvalve: Create a full Medusa order (cart → complete), call Netvalve POST /rebill
-  with the original transactionID, then capture the new order payment.
+- Netvalve: Create a full Medusa order (cart marked recurring_order, then complete),
+  call Netvalve POST /rebill with the original transactionID, then capture the new
+  order payment. Recurring orders do not trigger OrderGroove Purchase POST (no second subscription).
 """
 
 import logging
@@ -135,6 +137,7 @@ class OrderGrooveRecurringService:
             amount_minor = int(round(amount * 100))
 
             await self._init_payment_solidgate_recurring(new_cart_id)
+            await self._set_cart_recurring_metadata(new_cart_id)
 
             logger.info(
                 f"[og-recurring] Solidgate /recurring — amount={amount} ({amount_minor} minor), "
@@ -408,6 +411,35 @@ class OrderGrooveRecurringService:
             step="get_default_region",
         )
 
+    async def _set_cart_recurring_metadata(self, cart_id: str) -> None:
+        """Set cart metadata.recurring_order = True so order.placed and settle_ok skip Purchase POST."""
+        result = await self.medusa.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="GET",
+        )
+        if not result.success:
+            logger.warning(
+                "[og-recurring] Could not fetch cart to set recurring metadata: %s",
+                result.message,
+            )
+            return
+        cart = result.data.get("cart", {})
+        metadata = dict(cart.get("metadata") or {})
+        metadata["recurring_order"] = True
+        update = await self.medusa.execute_request(
+            endpoint=f"/store/carts/{cart_id}",
+            method="POST",
+            payload={"metadata": metadata},
+        )
+        if update.success:
+            logger.info("[og-recurring] Cart %s marked as recurring_order (skip Purchase POST)", cart_id)
+        else:
+            logger.warning(
+                "[og-recurring] Failed to set recurring metadata on cart %s: %s",
+                cart_id,
+                update.message,
+            )
+
     # ──────────────────────────────────────────────────────────────
     # Step 2: Create a new Medusa order
     # ──────────────────────────────────────────────────────────────
@@ -522,6 +554,9 @@ class OrderGrooveRecurringService:
                 f"(subtotal={cart_data.get('subtotal')}, "
                 f"shipping_total={cart_data.get('shipping_total')})"
             )
+
+        # Mark cart as recurring so order.placed subscriber does not trigger Purchase POST
+        await self._set_cart_recurring_metadata(cart_id)
 
         # 2g. Complete cart → creates the order
         complete_result = await self.medusa.complete_cart(cart_id)
