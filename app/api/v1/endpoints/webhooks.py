@@ -260,11 +260,14 @@ async def handle_solidgate_webhook(
                 payment_override = _get_solidgate_payment_override(payload)
                 if order_id and payment_override and payment_override.get("token_id"):
                     try:
-                        og_result = await medusa_service.trigger_ordergroove_purchase_post(
+                        from app.services.ordergroove_purchase_service import trigger_purchase_post
+
+                        payment_override.setdefault("label", "solidgate")
+                        og_result = await trigger_purchase_post(
                             order_id=order_id,
                             payment_override=payment_override,
                         )
-                        if og_result.success:
+                        if og_result.get("success"):
                             logger.info(
                                 "OrderGroove Purchase POST triggered for Solidgate order %s",
                                 order_id,
@@ -273,7 +276,7 @@ async def handle_solidgate_webhook(
                             logger.warning(
                                 "OrderGroove Purchase POST failed for order %s: %s",
                                 order_id,
-                                og_result.message,
+                                og_result.get("error"),
                             )
                     except Exception as og_err:
                         logger.warning(

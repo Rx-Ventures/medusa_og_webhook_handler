@@ -19,6 +19,9 @@ alembic==1.14.0
 # HTTP Client (for PSP calls)
 httpx==0.28.1
 
+# AES for OrderGroove payment encryption (AES-256-ECB)
+pycryptodome==3.21.0
+
 # Payment Gateway SDK
 solidgate-card-sdk==0.1.0
 

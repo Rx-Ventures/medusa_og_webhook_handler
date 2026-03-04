@@ -131,6 +131,13 @@ class Settings(BaseSettings):
 
     SOLIDGATE_RECURRING_IP: str = "203.0.113.0"
 
+    # ── OrderGroove Purchase POST (subscription/create) ──
+    ORDERGROOVE_MERCHANT_ID: str = ""
+    ORDERGROOVE_HASH_KEY: str = ""  # 32 bytes for AES-256-ECB encryption + HMAC
+    ORDERGROOVE_PURCHASE_API_URL: str = "https://staging.sc.ordergroove.com/subscription/create"
+    ORDERGROOVE_PURCHASE_API_KEY: str = ""
+    ORDERGROOVE_API_KEY: str = ""  # fallback if PURCHASE_API_KEY not set
+
     SLACK_ALERTS_URL: str
 
     model_config = SettingsConfigDict(

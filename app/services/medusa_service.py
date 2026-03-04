@@ -441,17 +441,5 @@ class MedusaService:
         cart = result.data.get("cart", {})
         return cart.get("metadata") or {}
 
-    async def trigger_ordergroove_purchase_post(
-        self,
-        order_id: str,
-        payment_override: dict,
-    ) -> GenericApiResponse:
-        """Call Medusa admin route to trigger OrderGroove Purchase POST (e.g. after Solidgate settle_ok)."""
-        return await self.execute_request(
-            endpoint="/admin/ordergroove/trigger-purchase-post",
-            method="POST",
-            payload={"order_id": order_id, "payment_override": payment_override},
-        )
-
 
 medusa_service = MedusaService()
