@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote_plus
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from app.core.config import settings
 from app.core.dependencies import get_unit_of_work
 from app.core.unit_of_work import UnitOfWork
 from app.models.test_token_customer import TestTokenCustomer
@@ -267,6 +268,16 @@ async def ordergroove_trigger_purchase_post(
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"success": False, "message": "Missing payment_override.token_id (required for Purchase POST)"},
+        )
+
+    if not settings.ORDERGROOVE_PURCHASE_ENABLED:
+        logger.info("[ordergroove] Purchase POST disabled (ORDERGROOVE_PURCHASE_ENABLED=false) — skipping")
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": False,
+                "message": "OrderGroove Purchase POST is disabled. Set ORDERGROOVE_PURCHASE_ENABLED=true to enable.",
+            },
         )
 
     result = await trigger_purchase_post(order_id=order_id, payment_override=payment_override)
