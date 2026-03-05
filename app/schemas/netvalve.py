@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -148,8 +148,7 @@ class SaleRequest(BaseModel):
     # Idempotency guard
     netvalve_sale_success: Optional[bool] = None
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SaleResult(BaseModel):
@@ -288,8 +287,7 @@ class WebhookPayload(BaseModel):
     response_code: Optional[str] = None
     response_message: Optional[str] = None
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class WebhookResponse(BaseModel):
