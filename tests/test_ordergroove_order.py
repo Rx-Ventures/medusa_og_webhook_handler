@@ -203,13 +203,31 @@ def test_trigger_purchase_post_missing_token(client, mock_uow):
     assert "token_id" in response.json()["message"].lower()
 
 
+def test_trigger_purchase_post_disabled(client, mock_uow):
+    """POST /api/v1/ordergroove/trigger-purchase-post returns 200 with success False when ORDERGROOVE_PURCHASE_ENABLED is false."""
+    with patch("app.api.v1.endpoints.ordergroove_order.settings") as mock_settings:
+        mock_settings.ORDERGROOVE_PURCHASE_ENABLED = False
+        response = client.post(
+            "/api/v1/ordergroove/trigger-purchase-post",
+            json={"order_id": "ord_1", "payment_override": {"token_id": "tok_1"}},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is False
+    assert "disabled" in data["message"].lower()
+
+
 def test_trigger_purchase_post_success(client, mock_uow):
-    """POST /api/v1/ordergroove/trigger-purchase-post returns success."""
-    with patch(
-        "app.api.v1.endpoints.ordergroove_order.trigger_purchase_post",
-        new_callable=AsyncMock,
-        return_value={"success": True, "data": {"subscription_id": "sub_1"}},
+    """POST /api/v1/ordergroove/trigger-purchase-post returns success when enabled."""
+    with (
+        patch("app.api.v1.endpoints.ordergroove_order.settings") as mock_settings,
+        patch(
+            "app.api.v1.endpoints.ordergroove_order.trigger_purchase_post",
+            new_callable=AsyncMock,
+            return_value={"success": True, "data": {"subscription_id": "sub_1"}},
+        ),
     ):
+        mock_settings.ORDERGROOVE_PURCHASE_ENABLED = True
         response = client.post(
             "/api/v1/ordergroove/trigger-purchase-post",
             json={"order_id": "ord_1", "payment_override": {"token_id": "tok_1"}},
@@ -221,12 +239,16 @@ def test_trigger_purchase_post_success(client, mock_uow):
 
 
 def test_trigger_purchase_post_failure(client, mock_uow):
-    """POST /api/v1/ordergroove/trigger-purchase-post returns error on OG failure."""
-    with patch(
-        "app.api.v1.endpoints.ordergroove_order.trigger_purchase_post",
-        new_callable=AsyncMock,
-        return_value={"success": False, "error": "OG API rejected", "status_code": 400},
+    """POST /api/v1/ordergroove/trigger-purchase-post returns error on OG failure when enabled."""
+    with (
+        patch("app.api.v1.endpoints.ordergroove_order.settings") as mock_settings,
+        patch(
+            "app.api.v1.endpoints.ordergroove_order.trigger_purchase_post",
+            new_callable=AsyncMock,
+            return_value={"success": False, "error": "OG API rejected", "status_code": 400},
+        ),
     ):
+        mock_settings.ORDERGROOVE_PURCHASE_ENABLED = True
         response = client.post(
             "/api/v1/ordergroove/trigger-purchase-post",
             json={"order_id": "ord_1", "payment_override": {"token_id": "tok_1"}},

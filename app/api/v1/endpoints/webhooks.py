@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.core.config import settings
 from app.core.dependencies import get_unit_of_work
 from app.core.exceptions import WebhookProcessingError
 from app.core.unit_of_work import UnitOfWork
@@ -258,7 +259,12 @@ async def handle_solidgate_webhook(
                 )
             else:
                 payment_override = _get_solidgate_payment_override(payload)
-                if order_id and payment_override and payment_override.get("token_id"):
+                if (
+                    settings.ORDERGROOVE_PURCHASE_ENABLED
+                    and order_id
+                    and payment_override
+                    and payment_override.get("token_id")
+                ):
                     try:
                         from app.services.ordergroove_purchase_service import trigger_purchase_post
 
@@ -285,6 +291,11 @@ async def handle_solidgate_webhook(
                             og_err,
                             exc_info=True,
                         )
+                elif order_id and payment_override and payment_override.get("token_id") and not settings.ORDERGROOVE_PURCHASE_ENABLED:
+                    logger.info(
+                        "OrderGroove Purchase POST disabled (ORDERGROOVE_PURCHASE_ENABLED=false) — skipping for order %s",
+                        order_id,
+                    )
             await uow.webhook_events.mark_as_processed(webhook_event_id)
             await uow.commit()
             return result
