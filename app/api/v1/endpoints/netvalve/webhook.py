@@ -1,12 +1,12 @@
 """
-NetValve Webhook Route — idempotent, with Medusa trigger and Slack alerting.
+NetValve Webhook Route — idempotent, with DB tracking and Slack alerting.
 
 Endpoint:
   POST /api/v1/netvalve/webhook — Receive webhooks from NetValve
 
 Maps inbound webhook event types to payment actions:
   authorized       → AUTHORIZED
-  captured / paid  → SUCCESSFUL  (triggers Medusa order completion)
+  captured / paid  → SUCCESSFUL
   pending          → PENDING
   requires_more    → REQUIRES_MORE
   failed / declined → FAILED
@@ -14,22 +14,32 @@ Maps inbound webhook event types to payment actions:
 
 Resilience:
   - Idempotency: duplicate events are detected via event_id and silently ACKed.
-  - SUCCESSFUL: triggers medusa_service.process_settle_ok(cart_id).
-  - Failures: marked in the DB and alerted via Slack.
+  - All events are tracked in the DB (processed / failed).
+  - FAILED/DECLINED events trigger a Slack critical alert.
+
+NOTE — why process_settle_ok is NOT called here:
+  For NetValve, order creation always happens synchronously *before* the
+  webhook arrives:
+    • HPF / TOKEN purchases: cart.complete() is called by the storefront,
+      which authorises + auto-captures the payment via the subscriber.
+    • Rebill / recurring orders: the recurring service calls complete_cart()
+      before POSTing to /rebill, so the order already exists when NetValve
+      sends the webhook.
+  process_settle_ok() is a Solidgate-specific helper (completes the cart on
+  settle_ok).  Invoking it here would (a) fail on already-completed carts and
+  (b) corrupt NetValve order metadata with Solidgate-keyed fields.
 """
 
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 
 from app.core.dependencies import get_unit_of_work
-from app.core.exceptions import WebhookProcessingError
 from app.core.unit_of_work import UnitOfWork
 from app.schemas.netvalve import WebhookPayload, WebhookResponse
 from app.schemas.webhook import WebhookEventCreate
 from app.services.idempotency_service import IdempotencyService
-from app.services.medusa_service import medusa_service
 from app.services.netvalve_service import netvalve_service
 from app.services.slack_service import slack_service
 
@@ -59,7 +69,7 @@ def _extract_cart_id(payload: dict) -> str | None:
     description=(
         "Receive and process webhook callbacks from the NetValve payment gateway. "
         "Idempotent — duplicate events are silently acknowledged. "
-        "SUCCESSFUL events trigger Medusa order completion."
+        "All events are tracked in the DB; FAILED/DECLINED events trigger a Slack alert."
     ),
     tags=["netvalve", "webhooks"],
 )
@@ -71,8 +81,12 @@ async def handle_netvalve_webhook(
     """
     POST /api/v1/netvalve/webhook
 
-    Receives webhook events from NetValve, maps them to internal payment
-    actions, and — for SUCCESSFUL events — triggers Medusa order completion.
+    Receives webhook events from NetValve and maps them to internal payment
+    actions (AUTHORIZED, SUCCESSFUL, FAILED, etc.).
+
+    Order creation is handled synchronously by the storefront (HPF/TOKEN) or
+    the recurring-order service (rebill) — the webhook is a notification only.
+    No Medusa cart-completion is triggered here.
     """
     payload_dict = payload.model_dump(exclude_none=True)
 
@@ -85,13 +99,13 @@ async def handle_netvalve_webhook(
         or f"nv_{int(time.time() * 1000)}"
     )
     event_type = payload_dict.get("type") or "unknown"
-    cart_id = _extract_cart_id(payload_dict)
+    reference_id = _extract_cart_id(payload_dict)
 
     logger.info(
-        "[netvalve] webhook received — event_id=%s, type=%s, cart_id=%s",
+        "[netvalve] webhook received — event_id=%s, type=%s, reference_id=%s",
         event_id,
         event_type,
-        cart_id,
+        reference_id,
     )
 
     # Map event type → action (synchronous)
@@ -103,7 +117,7 @@ async def handle_netvalve_webhook(
         event_id=event_id,
         psp="netvalve",
         event_type=event_type,
-        medusa_order_id=cart_id,
+        medusa_order_id=reference_id,
         payload=payload_dict,
     )
 
@@ -114,142 +128,60 @@ async def handle_netvalve_webhook(
 
     if idempotency_result is None:
         logger.info(
-            "[netvalve] webhook already processed or in-flight — event_id=%s", event_id
+            "[netvalve] duplicate webhook — already processed or in-flight, event_id=%s",
+            event_id,
         )
         return WebhookResponse(action=action, data=result.get("data"))
 
     webhook_event_id = idempotency_result.id
 
-    # ── SUCCESSFUL: trigger Medusa order completion ──────────────────────────
-    if action == "SUCCESSFUL":
-        if not cart_id:
-            error_msg = (
-                "Missing cart_id in NetValve SUCCESSFUL webhook payload. "
-                "Expected client_order_id or order_id."
-            )
-            logger.error("[netvalve] %s event_id=%s", error_msg, event_id)
-
-            try:
-                await uow.webhook_events.mark_as_failed(webhook_event_id, error_msg)
-                await uow.commit()
-            except Exception as db_err:
-                logger.error(
-                    "[netvalve] Failed to mark webhook %s as failed: %s",
-                    webhook_event_id,
-                    db_err,
-                )
-                try:
-                    await uow.rollback()
-                except Exception:
-                    pass
-
-            try:
-                await slack_service.send_critical_alert(
-                    title="NetValve SUCCESSFUL — Missing cart_id",
-                    alert=f"*event_id:* `{event_id}`\n{error_msg}",
-                    platform="NetValve",
-                )
-            except Exception as slack_err:
-                logger.error("[netvalve] Slack alert failed: %s", slack_err)
-
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_msg,
-            )
-
+    # ── FAILED / DECLINED: alert ops via Slack ───────────────────────────────
+    if action in ("FAILED", "CANCELED"):
+        failure_detail = (
+            payload_dict.get("response_message")
+            or payload_dict.get("decline_reason")
+            or "no detail"
+        )
+        logger.warning(
+            "[netvalve] webhook action=%s — event_id=%s, reference_id=%s, detail=%s",
+            action,
+            event_id,
+            reference_id,
+            failure_detail,
+        )
         try:
-            medusa_result = await medusa_service.process_settle_ok(cart_id)
-
-            await uow.webhook_events.mark_as_processed(webhook_event_id)
-            await uow.commit()
-
-            logger.info(
-                "[netvalve] SUCCESSFUL — Medusa order completed for cart_id=%s", cart_id
+            await slack_service.send_critical_alert(
+                title=f"NetValve Payment {action}",
+                alert=(
+                    f"*Action:* `{action}`\n"
+                    f"*Event ID:* `{event_id}`\n"
+                    f"*Reference:* `{reference_id}`\n"
+                    f"*Detail:* {failure_detail}"
+                ),
+                platform="NetValve",
             )
-            return WebhookResponse(action=action, data=result.get("data"))
+        except Exception as slack_err:
+            logger.error("[netvalve] Slack alert failed: %s", slack_err)
 
-        except WebhookProcessingError as exc:
-            step = exc.details.get("step", "unknown")
-            logger.error(
-                "[netvalve] SUCCESSFUL processing failed for cart_id=%s at step [%s]: %s",
-                cart_id,
-                step,
-                exc.message,
-            )
-            try:
-                await uow.webhook_events.mark_as_failed(webhook_event_id, exc.message)
-                await uow.commit()
-            except Exception as db_err:
-                logger.error(
-                    "[netvalve] Failed to mark webhook %s as failed: %s",
-                    webhook_event_id,
-                    db_err,
-                )
-                try:
-                    await uow.rollback()
-                except Exception:
-                    pass
-            try:
-                await slack_service.send_critical_alert(
-                    title="NetValve SUCCESSFUL — Processing Failed",
-                    alert=(
-                        f"*Step:* `{step}`\n"
-                        f"*Cart:* `{cart_id}`\n"
-                        f"*Event:* `{event_id}`\n"
-                        f"*Error:* {exc.message}"
-                    ),
-                    platform="NetValve",
-                )
-            except Exception as slack_err:
-                logger.error("[netvalve] Slack alert failed: %s", slack_err)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to process SUCCESSFUL event: {exc.message}",
-            )
-
-        except Exception as exc:
-            logger.exception(
-                "[netvalve] Unexpected error processing SUCCESSFUL for cart_id=%s",
-                cart_id,
-            )
-            try:
-                await uow.webhook_events.mark_as_failed(
-                    webhook_event_id, f"Unexpected error: {exc}"
-                )
-                await uow.commit()
-            except Exception as db_err:
-                logger.error(
-                    "[netvalve] Failed to mark webhook %s as failed: %s",
-                    webhook_event_id,
-                    db_err,
-                )
-                try:
-                    await uow.rollback()
-                except Exception:
-                    pass
-            try:
-                await slack_service.send_critical_alert(
-                    title="NetValve SUCCESSFUL — Unexpected Error",
-                    alert=(
-                        f"*Cart:* `{cart_id}`\n"
-                        f"*Event:* `{event_id}`\n"
-                        f"*Error:* {exc}"
-                    ),
-                    platform="NetValve",
-                )
-            except Exception as slack_err:
-                logger.error("[netvalve] Slack alert failed: %s", slack_err)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="An unexpected error occurred while processing the SUCCESSFUL event",
-            )
-
-    # ── Non-SUCCESSFUL: mark as processed and ACK ────────────────────────────
-    await uow.webhook_events.mark_as_processed(webhook_event_id)
-    await uow.commit()
+    # ── Mark event as processed and ACK ─────────────────────────────────────
+    try:
+        await uow.webhook_events.mark_as_processed(webhook_event_id)
+        await uow.commit()
+    except Exception as db_err:
+        logger.error(
+            "[netvalve] Failed to mark webhook %s as processed: %s",
+            webhook_event_id,
+            db_err,
+        )
+        try:
+            await uow.rollback()
+        except Exception:
+            pass
 
     logger.info(
-        "[netvalve] webhook processed — action=%s, event_id=%s", action, event_id
+        "[netvalve] webhook processed — action=%s, event_id=%s",
+        action,
+        event_id,
     )
     return WebhookResponse(action=action, data=result.get("data"))
 
