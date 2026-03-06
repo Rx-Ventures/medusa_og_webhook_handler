@@ -279,11 +279,13 @@ class WebhookPayload(BaseModel):
     """
 
     type: Optional[str] = None
-    session_id: Optional[str] = None
     id: Optional[str] = None
+    event_id: Optional[str] = None
+    session_id: Optional[str] = None
     amount: Optional[float] = None
     transaction_id: Optional[str] = None
     order_id: Optional[str] = None
+    client_order_id: Optional[str] = None
     response_code: Optional[str] = None
     response_message: Optional[str] = None
 
@@ -307,4 +309,28 @@ class PaymentStatusResponse(BaseModel):
 
     status: str
     transaction_id: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Reconcile – POST /api/v1/netvalve/reconcile
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ReconcileRequest(BaseModel):
+    """Request body for manual payment reconciliation."""
+
+    cart_id: str = Field(..., description="Medusa cart ID to reconcile")
+    force: bool = Field(
+        False,
+        description="Force re-processing even if order was already completed",
+    )
+
+
+class ReconcileResponse(BaseModel):
+    """Response from the reconcile endpoint."""
+
+    success: bool
+    cart_id: str
+    message: str
     data: Optional[Dict[str, Any]] = None

@@ -27,6 +27,7 @@ from app.schemas.netvalve import (
     HpfSessionErrorResponse,
 )
 from app.services.netvalve_service import netvalve_service
+from app.services.slack_service import slack_service
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,25 @@ async def create_hpf_session(body: HpfSessionRequest):
     body_dict = body.model_dump(exclude_none=True)
 
     status_code, response_body = await netvalve_service.create_hpf_session(body_dict)
+
+    if status_code >= 500:
+        try:
+            error_detail = (
+                response_body.get("error")
+                or response_body.get("message")
+                or response_body.get("detail")
+                or "All HPF initialization paths failed"
+            ) if isinstance(response_body, dict) else str(response_body)
+            await slack_service.send_critical_alert(
+                title="NetValve HPF Initialization Failed",
+                alert=(
+                    f"*Status:* `{status_code}`\n"
+                    f"*Error:* {error_detail}"
+                ),
+                platform="NetValve",
+            )
+        except Exception:
+            pass
 
     return JSONResponse(content=response_body, status_code=status_code)
 
@@ -113,5 +133,24 @@ async def get_hpf_session(
     body_dict = body.model_dump(exclude_none=True)
 
     status_code, response_body = await netvalve_service.create_hpf_session(body_dict)
+
+    if status_code >= 500:
+        try:
+            error_detail = (
+                response_body.get("error")
+                or response_body.get("message")
+                or response_body.get("detail")
+                or "All HPF initialization paths failed"
+            ) if isinstance(response_body, dict) else str(response_body)
+            await slack_service.send_critical_alert(
+                title="NetValve HPF Initialization Failed",
+                alert=(
+                    f"*Status:* `{status_code}`\n"
+                    f"*Error:* {error_detail}"
+                ),
+                platform="NetValve",
+            )
+        except Exception:
+            pass
 
     return JSONResponse(content=response_body, status_code=status_code)

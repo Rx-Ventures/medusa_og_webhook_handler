@@ -177,7 +177,9 @@ class OrderGrooveRecurringService:
             }
         else:
             # ── Netvalve flow: create order, rebill, capture ──
-            transaction_id = await self._get_original_transaction_id(original_order_id)
+            transaction_id = await self._get_original_transaction_id(
+                original_order_id, customer_id=customer_id
+            )
             logger.info(
                 f"[og-recurring] Original order {original_order_id} → "
                 f"transactionID={transaction_id}"
@@ -231,44 +233,97 @@ class OrderGrooveRecurringService:
     # Step 1: Get transactionID from original order metadata
     # ──────────────────────────────────────────────────────────────
 
-    async def _get_original_transaction_id(self, order_id: str) -> str:
+    @staticmethod
+    def _extract_transaction_id_from_order(order: dict) -> str | None:
+        """Pull the Netvalve transactionId out of an order's payment_capture metadata."""
+        metadata = order.get("metadata") or {}
+        pc = metadata.get("payment_capture") or {}
+        tid = pc.get("transactionId") or pc.get("netvalve_transaction_id")
+        if not tid:
+            for p in pc.get("payments", []):
+                tid = p.get("transactionId") or p.get("netvalve_transaction_id")
+                if tid:
+                    break
+        return str(tid) if tid else None
+
+    async def _get_original_transaction_id(
+        self, order_id: str, customer_id: str = ""
+    ) -> str:
+        """
+        Return the Netvalve transactionId from the original order.
+
+        Primary path  : fetch the order directly by ID (works when
+                        originalOrderId from OG == Medusa order ID).
+        Fallback path : when the direct fetch 404s (e.g. originalOrderId is an
+                        OG-internal numeric ID like "25"), query the customer's
+                        recent orders and pick the most recent one that has a
+                        Netvalve transactionId in its payment_capture metadata.
+        """
         result = await self.medusa.execute_request(
             endpoint=f"/admin/orders/{order_id}",
             method="GET",
             params={"fields": "id,metadata"},
         )
 
-        if not result.success:
-            raise RecurringOrderError(
-                f"Failed to fetch original order {order_id}: {result.message}",
-                step="get_original_order",
-            )
-
-        order = result.data.get("order", {})
-        metadata = order.get("metadata", {})
-
-        payment_capture = metadata.get("payment_capture", {})
-        transaction_id = (
-            payment_capture.get("transactionId")
-            or payment_capture.get("netvalve_transaction_id")
-        )
-
-        if not transaction_id:
-            payments = payment_capture.get("payments", [])
-            for p in payments:
-                tid = p.get("transactionId") or p.get("netvalve_transaction_id")
-                if tid:
-                    transaction_id = tid
-                    break
-
-        if not transaction_id:
+        if result.success:
+            order = result.data.get("order", {})
+            transaction_id = self._extract_transaction_id_from_order(order)
+            if transaction_id:
+                return transaction_id
+            metadata = order.get("metadata") or {}
             raise RecurringOrderError(
                 f"No Netvalve transactionID in order {order_id} metadata. "
-                f"metadata.payment_capture={payment_capture}",
+                f"metadata.payment_capture={metadata.get('payment_capture', {})}",
                 step="extract_transaction_id",
             )
 
-        return str(transaction_id)
+        # ── Fallback: originalOrderId is not a Medusa ID ──────────────────────
+        # OG may store the merchant's own order reference (e.g. "25") instead of
+        # the Medusa order ID.  If we have the Medusa customer_id, look up their
+        # recent orders and locate a Netvalve transactionId.
+        if customer_id:
+            logger.warning(
+                "[og-recurring] Order '%s' not found in Medusa (status=%s) — "
+                "falling back to customer order lookup for customer_id=%s",
+                order_id,
+                result.status_code,
+                customer_id,
+            )
+            fallback = await self.medusa.execute_request(
+                endpoint="/admin/orders",
+                method="GET",
+                params={
+                    "customer_id": customer_id,
+                    "fields": "id,metadata",
+                    "order": "-created_at",
+                    "limit": "20",
+                },
+            )
+            if fallback.success:
+                for o in fallback.data.get("orders", []):
+                    tid = self._extract_transaction_id_from_order(o)
+                    if tid:
+                        logger.info(
+                            "[og-recurring] Found transactionId=%s via customer "
+                            "fallback — customer=%s, medusa_order=%s "
+                            "(og_original_order_id=%s)",
+                            tid,
+                            customer_id,
+                            o.get("id"),
+                            order_id,
+                        )
+                        return tid
+            raise RecurringOrderError(
+                f"Order '{order_id}' not found in Medusa and no Netvalve "
+                f"transactionId found via customer fallback "
+                f"(customer_id={customer_id})",
+                step="get_original_order",
+            )
+
+        raise RecurringOrderError(
+            f"Failed to fetch original order {order_id}: {result.message}",
+            step="get_original_order",
+        )
 
     async def _get_order_details(self, order_id: str) -> dict | None:
         result = await self.medusa.execute_request(
