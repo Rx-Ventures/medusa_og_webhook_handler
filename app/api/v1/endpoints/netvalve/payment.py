@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.schemas.netvalve import SaleRequest, PaymentResponse
 from app.services.netvalve_service import netvalve_service
+from app.services.slack_service import slack_service
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,19 @@ async def authorize_payment(body: SaleRequest):
     """
     data = body.model_dump(exclude_none=True)
 
-    result = await netvalve_service.authorize_payment(data)
+    try:
+        result = await netvalve_service.authorize_payment(data)
+    except Exception as exc:
+        logger.error("[netvalve] authorize_payment error: %s", exc)
+        try:
+            await slack_service.send_critical_alert(
+                title="NetValve Payment Authorization Error",
+                alert=f"*Error:* {exc}",
+                platform="NetValve",
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Payment authorization failed: {exc}")
 
     return PaymentResponse(
         status=result["status"],

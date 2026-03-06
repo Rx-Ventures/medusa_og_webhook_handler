@@ -3,7 +3,10 @@ import logging
 
 from fastapi import APIRouter, status
 
-from app.schemas.payment import PaymentInitializeRequest, PaymentInitializeResponse
+from app.schemas.payment import (
+    PaymentInitializeRequest,
+    PaymentInitializeResponse,
+)
 from app.schemas.common import GenericApiResponse
 from app.services.solidgate_service import solidgate_service
 
@@ -43,3 +46,5 @@ async def initialize_payment(payload: PaymentInitializeRequest) -> GenericApiRes
             message="Failed to initialize payment",
             data=None
         )
+
+

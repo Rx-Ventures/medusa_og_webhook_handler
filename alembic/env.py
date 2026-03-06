@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 
-from app.core.database import Base
+from app.models.base import Base
 from app.core.config import settings
+from app.models.base import Base
 from app.models.webhook import WebhookEvent
+from app.models.test_token_customer import TestTokenCustomer
 
 config = context.config
 
@@ -18,9 +20,10 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+
 def include_object(object, name, type_, reflected, compare_to):
     if type_ == "table":
-        our_tables = ["webhook_events"]
+        our_tables = ["webhook_events", "zzz_test_token_customer"]
         return name in our_tables
     return True
 

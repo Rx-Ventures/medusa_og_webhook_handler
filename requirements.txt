@@ -19,6 +19,9 @@ alembic==1.14.0
 # HTTP Client (for PSP calls)
 httpx==0.28.1
 
+# AES for OrderGroove payment encryption (AES-256-ECB)
+pycryptodome==3.21.0
+
 # Payment Gateway SDK
 solidgate-card-sdk==0.1.0
 
@@ -26,4 +29,11 @@ greenlet==3.1.1
 watchfiles==1.1.0
 
 redis==5.2.1
+
+# Form parsing (recommended by Starlette; silences PendingDeprecationWarning)
+python-multipart>=0.0.9
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
 

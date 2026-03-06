@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -148,8 +148,7 @@ class SaleRequest(BaseModel):
     # Idempotency guard
     netvalve_sale_success: Optional[bool] = None
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SaleResult(BaseModel):
@@ -280,16 +279,17 @@ class WebhookPayload(BaseModel):
     """
 
     type: Optional[str] = None
-    session_id: Optional[str] = None
     id: Optional[str] = None
+    event_id: Optional[str] = None
+    session_id: Optional[str] = None
     amount: Optional[float] = None
     transaction_id: Optional[str] = None
     order_id: Optional[str] = None
+    client_order_id: Optional[str] = None
     response_code: Optional[str] = None
     response_message: Optional[str] = None
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class WebhookResponse(BaseModel):
@@ -309,4 +309,28 @@ class PaymentStatusResponse(BaseModel):
 
     status: str
     transaction_id: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Reconcile – POST /api/v1/netvalve/reconcile
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ReconcileRequest(BaseModel):
+    """Request body for manual payment reconciliation."""
+
+    cart_id: str = Field(..., description="Medusa cart ID to reconcile")
+    force: bool = Field(
+        False,
+        description="Force re-processing even if order was already completed",
+    )
+
+
+class ReconcileResponse(BaseModel):
+    """Response from the reconcile endpoint."""
+
+    success: bool
+    cart_id: str
+    message: str
     data: Optional[Dict[str, Any]] = None

@@ -133,5 +133,59 @@ class SolidgateService:
     def extract_payment_token(self, webhook_payload: dict) -> str | None:
         return webhook_payload.get("transaction", {}).get("card_token", {}).get("token")
 
+    async def recurring(
+        self,
+        order_id: str,
+        amount: int,
+        currency: str,
+        recurring_token: str,
+        order_description: str = "Recurring order",
+        customer_email: str = "",
+    ) -> dict[str, Any]:
+        """
+        Call Solidgate POST /recurring for 1-click recurring charge.
+        order_id: new order/cart id for this transaction.
+        amount: in minor units (cents).
+        """
+        payload: dict[str, Any] = {
+            "order_id": order_id,
+            "amount": amount,
+            "currency": currency,
+            "order_description": order_description,
+            "type": "auth",
+            "authorization_type": "final",
+            "payment_type": "1-click",
+            "recurring_token": recurring_token,
+            "platform": "WEB",
+            "settle_interval": 0,
+            "ip_address": (settings.SOLIDGATE_RECURRING_IP or "203.0.113.0").strip(),
+        }
+        if customer_email:
+            payload["customer_email"] = customer_email
+        return await self.execute_request(
+            endpoint=f"{settings.SOLIDGATE_API_URL}/recurring",
+            payload=payload,
+            method="POST",
+        )
+
+    async def refund_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        Call Solidgate POST /api/v1/refund.
+        payload: { order_id: str, amount: int (cents), refund_reason_code: str }
+        """
+        logger.info(f"Initiating Solidgate refund — order_id={payload.get('order_id')}, "
+                     f"amount={payload.get('amount')}, reason={payload.get('refund_reason_code')}")
+        result = await self.execute_request(
+            endpoint=f"{settings.SOLIDGATE_API_URL}/refund",
+            payload=payload,
+            method="POST",
+        )
+        if result.get("success"):
+            logger.info(f"Solidgate refund succeeded — order_id={payload.get('order_id')}")
+        else:
+            logger.error(f"Solidgate refund failed — order_id={payload.get('order_id')}, "
+                         f"response={result}")
+        return result
+
 
 solidgate_service = SolidgateService()
