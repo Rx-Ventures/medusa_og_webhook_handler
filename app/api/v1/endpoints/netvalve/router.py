@@ -13,6 +13,7 @@ the full paths become:
   POST /api/v1/netvalve/cancel        — Cancel (void) payment
   POST /api/v1/netvalve/webhook       — NetValve webhook receiver
   GET  /api/v1/netvalve/status        — Payment status lookup
+  POST /api/v1/netvalve/reconcile     — Manual payment reconciliation
 
 """
 
@@ -25,6 +26,7 @@ from app.api.v1.endpoints.netvalve.refund import router as refund_router
 from app.api.v1.endpoints.netvalve.cancel import router as cancel_router
 from app.api.v1.endpoints.netvalve.webhook import router as webhook_router
 from app.api.v1.endpoints.netvalve.status import router as status_router
+from app.api.v1.endpoints.netvalve.reconcile import router as reconcile_router
 
 # Main NetValve router — prefix is applied in api.py as /netvalve
 netvalve_router = APIRouter()
@@ -37,3 +39,4 @@ netvalve_router.include_router(refund_router)
 netvalve_router.include_router(cancel_router)
 netvalve_router.include_router(webhook_router)
 netvalve_router.include_router(status_router)
+netvalve_router.include_router(reconcile_router)
