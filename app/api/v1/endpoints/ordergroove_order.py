@@ -31,6 +31,7 @@ from app.services.ordergroove_recurring_service import (
     og_recurring_service,
     RecurringOrderError,
 )
+from app.services.slack_service import slack_service
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,20 @@ async def handle_ordergroove_order_placement(
         logger.error(
             f"[og-recurring] Failed at step '{exc.step}': {exc.message}"
         )
+        try:
+            _payment_label = (head.get("paymentLabel") or head.get("orderPaymentLabel") or "").strip().lower()
+            _platform = "Solidgate" if _payment_label == "solidgate" else "NetValve"
+            await slack_service.send_critical_alert(
+                title=f"{_platform} Recurring Order Failed",
+                alert=(
+                    f"*OG Order ID:* `{og_order_id}`\n"
+                    f"*Step:* `{exc.step}`\n"
+                    f"*Error:* {exc.message}"
+                ),
+                platform=_platform,
+            )
+        except Exception:
+            pass
         return Response(
             content=XML_ERROR_TEMPLATE.format(
                 error_code="010",
@@ -231,6 +246,19 @@ async def handle_ordergroove_order_placement(
 
     except Exception as exc:
         logger.exception(f"[og-recurring] Unexpected error processing OG order {og_order_id}")
+        try:
+            _payment_label = (head.get("paymentLabel") or head.get("orderPaymentLabel") or "").strip().lower()
+            _platform = "Solidgate" if _payment_label == "solidgate" else "NetValve"
+            await slack_service.send_critical_alert(
+                title=f"{_platform} Recurring Order — Unexpected Error",
+                alert=(
+                    f"*OG Order ID:* `{og_order_id}`\n"
+                    f"*Error:* {exc}"
+                ),
+                platform=_platform,
+            )
+        except Exception:
+            pass
         return Response(
             content=XML_ERROR_TEMPLATE.format(
                 error_code="099",

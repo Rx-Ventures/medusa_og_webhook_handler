@@ -19,6 +19,7 @@ from app.core.exceptions import WebhookProcessingError
 from app.core.unit_of_work import UnitOfWork
 from app.schemas.netvalve import ReconcileRequest, ReconcileResponse
 from app.services.medusa_service import medusa_service
+from app.services.slack_service import slack_service
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,17 @@ async def reconcile_netvalve_payment(
             cart_id,
             exc.message,
         )
+        try:
+            await slack_service.send_critical_alert(
+                title="NetValve Reconcile Failed",
+                alert=(
+                    f"*Cart ID:* `{cart_id}`\n"
+                    f"*Error:* {exc.message}"
+                ),
+                platform="NetValve",
+            )
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Reconciliation failed: {exc.message}",
@@ -95,6 +107,17 @@ async def reconcile_netvalve_payment(
         logger.exception(
             "[netvalve] reconcile unexpected error for cart_id=%s", cart_id
         )
+        try:
+            await slack_service.send_critical_alert(
+                title="NetValve Reconcile Unexpected Error",
+                alert=(
+                    f"*Cart ID:* `{cart_id}`\n"
+                    f"*Error:* {exc}"
+                ),
+                platform="NetValve",
+            )
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during reconciliation",
